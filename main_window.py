@@ -1,19 +1,42 @@
 """Control panel: browse or search verses, send selection to the display window."""
 import html
 import re
+from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QFont, QFontMetrics, QKeySequence
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt
+from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
+import theme
 from bible import Bible, Verse
 from display_window import DisplayWindow, available_screens
 from keybindings import KeyBindings
 from keybindings_dialog import KeyBindingsDialog
 from settings_dialog import SettingsDialog
+
+LOGO_PATH = theme.APP_DIR / 'resources' / 'vcbc logo.png'
+
+
+def _circular_pixmap(path: Path, size: int) -> QPixmap:
+    source = QPixmap(str(path))
+    if source.isNull():
+        return source
+    source = source.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+    result = QPixmap(size, size)
+    result.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path_clip = QPainterPath()
+    path_clip.addEllipse(QRectF(0, 0, size, size))
+    painter.setClipPath(path_clip)
+    x = (size - source.width()) // 2
+    y = (size - source.height()) // 2
+    painter.drawPixmap(x, y, source)
+    painter.end()
+    return result
 
 
 def _is_kjv(version_name: str) -> bool:
@@ -35,48 +58,23 @@ class MainWindow(QMainWindow):
         self.keybindings = KeyBindings.load()
 
         self.setWindowTitle('Scripture Cast')
+        self.setStyleSheet(f'QMainWindow {{ background: {theme.BG}; }} QWidget {{ color: {theme.TEXT}; }}')
 
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        layout.addLayout(self._build_screen_row())
-        layout.addLayout(self._build_browse_row())
-        layout.addLayout(self._build_search_row())
+        outer.addWidget(self._build_identity_strip())
 
-        self.results_list = QListWidget()
-        self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
-        layout.addWidget(self.results_list)
-
-        layout.addLayout(self._build_live_view_row())
-
-        button_row = QHBoxLayout()
-        self.send_button = QPushButton('Send to Display')
-        self.send_button.clicked.connect(self._on_send_clicked)
-        self.clear_button = QPushButton('Clear (Reset)')
-        self.clear_button.setToolTip(
-            'Wipe the loaded verse completely. There is nothing to resume — '
-            'select or search again to show something new.'
-        )
-        self.clear_button.clicked.connect(self.display.clear)
-        self.blank_button = QPushButton('Blank (Pause)')
-        self.blank_button.setCheckable(True)
-        self.blank_button.setToolTip(
-            'Temporarily hide the verse text (solid black) for a pause — prayer, announcement, etc.\n'
-            'Your verse stays loaded; press again to instantly bring it back.'
-        )
-        self.blank_button.clicked.connect(self.display.set_blanked)
-        self.display.blanked_changed.connect(self.blank_button.setChecked)
-        self.desktop_button = QPushButton('Show Desktop')
-        self.desktop_button.setCheckable(True)
-        self.desktop_button.setToolTip('Hide the display window entirely, revealing the desktop underneath')
-        self.desktop_button.clicked.connect(self.display.set_showing_desktop)
-        self.display.desktop_shown_changed.connect(self.desktop_button.setChecked)
-        button_row.addWidget(self.send_button)
-        button_row.addWidget(self.clear_button)
-        button_row.addWidget(self.blank_button)
-        button_row.addWidget(self.desktop_button)
-        layout.addLayout(button_row)
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(theme.SPACE_6, theme.SPACE_6, theme.SPACE_6, theme.SPACE_6)
+        body_layout.setSpacing(theme.SPACE_6)
+        body_layout.addWidget(self._build_find_passage_card(), stretch=135)
+        body_layout.addWidget(self._build_on_display_card(), stretch=100)
+        outer.addWidget(body, stretch=1)
 
         QApplication.instance().installEventFilter(self)
         self._apply_shortcuts(self.keybindings)
@@ -151,22 +149,70 @@ class MainWindow(QMainWindow):
         dialog.bindings_changed.connect(self._apply_shortcuts)
         dialog.exec()
 
-    def _build_live_view_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(QLabel('Currently on display:'))
+    def _build_on_display_card(self) -> QFrame:
+        card, layout = self._make_card('On Display')
+
+        header = QHBoxLayout()
+        self.output_tag_label = QLabel()
+        header.addStretch()
+        header.addWidget(self.output_tag_label)
+        layout.insertLayout(1, header)
 
         self._live_view_text = ''
         self._live_view_reference = ''
 
+        self.live_view_frame = QFrame()
+        self.live_view_frame.setStyleSheet('background: #0a0a0a; border: 1px solid ' + theme.DIVIDER + ';')
+        self.live_view_frame.setMinimumHeight(220)
+        frame_layout = QVBoxLayout(self.live_view_frame)
+        frame_layout.setContentsMargins(theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4)
         self.live_view_label = QLabel('(nothing shown)')
         self.live_view_label.setWordWrap(True)
         self.live_view_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.live_view_label.setFixedHeight(90)
+        frame_layout.addWidget(self.live_view_label)
+        layout.addWidget(self.live_view_frame, stretch=1)
+
         self.display.content_changed.connect(self._on_display_content_changed)
         self.display.blanked_changed.connect(lambda _: self._update_live_view())
         self.display.desktop_shown_changed.connect(lambda _: self._update_live_view())
-        row.addWidget(self.live_view_label, stretch=1)
-        return row
+
+        button_grid = QVBoxLayout()
+        top_row = QHBoxLayout()
+        self.blank_button = QPushButton('Blank (Pause)')
+        self.blank_button.setStyleSheet(theme.BUTTON_STYLE)
+        self.blank_button.setCheckable(True)
+        self.blank_button.setToolTip(
+            'Temporarily hide the verse text (solid black) for a pause — prayer, announcement, etc.\n'
+            'Your verse stays loaded; press again to instantly bring it back.'
+        )
+        self.blank_button.clicked.connect(self.display.set_blanked)
+        self.display.blanked_changed.connect(self.blank_button.setChecked)
+        self.desktop_button = QPushButton('Show Desktop')
+        self.desktop_button.setStyleSheet(theme.BUTTON_STYLE)
+        self.desktop_button.setCheckable(True)
+        self.desktop_button.setToolTip('Hide the display window entirely, revealing the desktop underneath')
+        self.desktop_button.clicked.connect(self.display.set_showing_desktop)
+        self.display.desktop_shown_changed.connect(self.desktop_button.setChecked)
+        top_row.addWidget(self.blank_button)
+        top_row.addWidget(self.desktop_button)
+        button_grid.addLayout(top_row)
+
+        self.clear_button = QPushButton('Clear (Reset)')
+        self.clear_button.setStyleSheet(theme.BUTTON_STYLE)
+        self.clear_button.setToolTip(
+            'Wipe the loaded verse completely. There is nothing to resume — '
+            'select or search again to show something new.'
+        )
+        self.clear_button.clicked.connect(self.display.clear)
+        button_grid.addWidget(self.clear_button)
+
+        layout.addLayout(button_grid)
+        self._update_output_tag()
+        return card
+
+    def _update_output_tag(self):
+        self.output_tag_label.setText(f'Output: Screen {self.screen_combo.currentIndex()}'.upper())
+        self.output_tag_label.setStyleSheet(theme.TAG_OUTLINE_STYLE)
 
     def _on_display_content_changed(self, text: str, reference: str):
         self._live_view_text = text
@@ -177,8 +223,7 @@ class MainWindow(QMainWindow):
         text = self._live_view_text
         if not text:
             self.live_view_label.setStyleSheet(
-                'background-color: black; color: #777777; font-style: italic; '
-                'font-family: Georgia, serif; padding: 8px; border-radius: 4px;'
+                'color: #777777; font-style: italic; font-family: Georgia, serif;'
             )
             self.live_view_label.setText('(nothing shown)')
             return
@@ -189,9 +234,7 @@ class MainWindow(QMainWindow):
         elif self.display.is_blanked:
             status = '<div style="font-size: 11px; color: #ff8888;">(blanked — audience sees black)</div>'
 
-        self.live_view_label.setStyleSheet(
-            'background-color: black; color: white; font-family: Georgia, serif; padding: 8px; border-radius: 4px;'
-        )
+        self.live_view_label.setStyleSheet('color: white; font-family: Georgia, serif;')
         self.live_view_label.setTextFormat(Qt.TextFormat.RichText)
 
         # This mirror shows the operator the whole verse, unlike the real display which
@@ -205,8 +248,8 @@ class MainWindow(QMainWindow):
         )
 
     def _fit_live_view_font_size(self, text: str, status: str) -> int:
-        available_width = max(self.live_view_label.width() - 16, 100)
-        available_height = self.live_view_label.height()
+        available_width = max(self.live_view_frame.width() - 2 * theme.SPACE_4 - 16, 100)
+        available_height = max(self.live_view_frame.height() - 2 * theme.SPACE_4, 40)
         for text_size in range(20, 9, -1):
             font = QFont('Georgia')
             font.setPixelSize(text_size)
@@ -218,35 +261,86 @@ class MainWindow(QMainWindow):
                 return text_size
         return 10
 
-    def _build_screen_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(QLabel('Version:'))
+    def _make_card(self, kicker: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName('card')
+        card.setStyleSheet(theme.CARD_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4)
+        layout.setSpacing(theme.SPACE_3)
+        kicker_label = QLabel(kicker.upper())
+        kicker_label.setStyleSheet(theme.KICKER_STYLE)
+        layout.addWidget(kicker_label)
+        return card, layout
+
+    def _build_identity_strip(self) -> QWidget:
+        strip = QFrame()
+        strip.setStyleSheet(f'background: {theme.SURFACE}; border-bottom: 1px solid {theme.DIVIDER};')
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3)
+        row.setSpacing(theme.SPACE_3)
+
+        logo_label = QLabel()
+        logo_pixmap = _circular_pixmap(LOGO_PATH, 40)
+        if not logo_pixmap.isNull():
+            logo_label.setPixmap(logo_pixmap)
+        row.addWidget(logo_label)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(0)
+        name_label = QLabel('Valenzuela City Baptist Church')
+        name_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 16px;')
+        subtitle_label = QLabel('SCRIPTURE CAST — OPERATOR CONSOLE')
+        subtitle_label.setStyleSheet(f'font-size: 10px; letter-spacing: 1px; color: {theme.TEXT_MUTED};')
+        title_box.addWidget(name_label)
+        title_box.addWidget(subtitle_label)
+        row.addLayout(title_box)
+        row.addStretch()
+
+        self.version_tag_label = QLabel()
+        self.version_tag_label.setStyleSheet(theme.TAG_OUTLINE_STYLE)
+        row.addWidget(self.version_tag_label)
+
         self.version_combo = QComboBox()
+        self.version_combo.setStyleSheet(theme.COMBO_STYLE)
         self.version_combo.addItems(list(self.bibles.keys()))
         self.version_combo.setCurrentText(self.version_name)
         self.version_combo.currentTextChanged.connect(self._on_version_combo_changed)
         row.addWidget(self.version_combo)
 
-        row.addWidget(QLabel('Display screen:'))
         self.screen_combo = QComboBox()
+        self.screen_combo.setStyleSheet(theme.COMBO_STYLE)
         for i, screen in enumerate(available_screens()):
             self.screen_combo.addItem(f'{i}: {screen.name()} ({screen.geometry().width()}x{screen.geometry().height()})')
+        self.screen_combo.currentIndexChanged.connect(lambda _: self._update_output_tag())
         row.addWidget(self.screen_combo)
+
         self.show_display_button = QPushButton('Show Display Window')
+        self.show_display_button.setStyleSheet(theme.BUTTON_STYLE)
         self.show_display_button.clicked.connect(self._on_show_display_clicked)
         row.addWidget(self.show_display_button)
-        self.preview_button = QPushButton('Preview (windowed)')
+
+        self.preview_button = QPushButton('Preview')
+        self.preview_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
         self.preview_button.setToolTip('Open the display as a normal window, for testing without a second monitor')
         self.preview_button.clicked.connect(self.display.show_preview)
         row.addWidget(self.preview_button)
+
         self.settings_button = QPushButton('Display Settings…')
+        self.settings_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
         self.settings_button.clicked.connect(self._on_settings_clicked)
         row.addWidget(self.settings_button)
-        self.keybindings_button = QPushButton('Keyboard Shortcuts…')
+
+        self.keybindings_button = QPushButton('Shortcuts…')
+        self.keybindings_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
         self.keybindings_button.clicked.connect(self._on_keybindings_clicked)
         row.addWidget(self.keybindings_button)
-        row.addStretch()
-        return row
+
+        self._update_version_tag()
+        return strip
+
+    def _update_version_tag(self):
+        self.version_tag_label.setText(self.version_name.upper())
 
     def _on_version_combo_changed(self, version_name: str):
         self._set_version(version_name)
@@ -263,6 +357,7 @@ class MainWindow(QMainWindow):
         self.bible = self.bibles[version_name]
         self.display.bible = self.bible
         self.display.is_kjv = _is_kjv(version_name)
+        self._update_version_tag()
 
         if self.version_combo.currentText() != version_name:
             self.version_combo.blockSignals(True)
@@ -320,36 +415,64 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.display, screen, parent=self)
         dialog.exec()
 
-    def _build_browse_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(QLabel('Book:'))
-        self.book_combo = QComboBox()
-        self.book_combo.currentTextChanged.connect(self._on_book_changed)
-        row.addWidget(self.book_combo)
+    def _build_find_passage_card(self) -> QFrame:
+        card, layout = self._make_card('Find a Passage')
 
-        row.addWidget(QLabel('Chapter:'))
-        self.chapter_spin = QSpinBox()
-        self.chapter_spin.setMinimum(1)
-        self.chapter_spin.valueChanged.connect(self._load_chapter)
-        row.addWidget(self.chapter_spin)
-
-        self.go_button = QPushButton('Load Chapter')
-        self.go_button.clicked.connect(self._load_chapter)
-        row.addWidget(self.go_button)
-        row.addStretch()
-        return row
-
-    def _build_search_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(QLabel('Search:'))
+        search_row = QHBoxLayout()
         self.search_edit = QLineEdit()
+        self.search_edit.setStyleSheet(theme.INPUT_STYLE)
         self.search_edit.setPlaceholderText('Reference (John 3:16) or text search')
         self.search_edit.returnPressed.connect(self._on_search)
-        row.addWidget(self.search_edit)
+        search_row.addWidget(self.search_edit, stretch=1)
         self.search_button = QPushButton('Search')
+        self.search_button.setStyleSheet(theme.BUTTON_STYLE)
         self.search_button.clicked.connect(self._on_search)
-        row.addWidget(self.search_button)
-        return row
+        search_row.addWidget(self.search_button)
+        layout.addLayout(search_row)
+
+        browse_row = QHBoxLayout()
+        book_label = QLabel('Book')
+        book_label.setStyleSheet(f'font-size: 12px; color: {theme.TEXT_MUTED};')
+        browse_row.addWidget(book_label)
+        self.book_combo = QComboBox()
+        self.book_combo.setStyleSheet(theme.COMBO_STYLE)
+        self.book_combo.currentTextChanged.connect(self._on_book_changed)
+        browse_row.addWidget(self.book_combo, stretch=1)
+
+        chapter_label = QLabel('Chapter')
+        chapter_label.setStyleSheet(f'font-size: 12px; color: {theme.TEXT_MUTED};')
+        browse_row.addWidget(chapter_label)
+        self.chapter_spin = QSpinBox()
+        self.chapter_spin.setStyleSheet(theme.SPINBOX_STYLE)
+        self.chapter_spin.setMinimum(1)
+        self.chapter_spin.valueChanged.connect(self._load_chapter)
+        browse_row.addWidget(self.chapter_spin)
+        layout.addLayout(browse_row)
+
+        header_row = QHBoxLayout()
+        self.results_title_label = QLabel()
+        self.results_title_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 15px;')
+        header_row.addWidget(self.results_title_label)
+        header_row.addStretch()
+        self.back_to_browse_button = QPushButton('Back to browse')
+        self.back_to_browse_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
+        self.back_to_browse_button.clicked.connect(self._on_back_to_browse)
+        self.back_to_browse_button.hide()
+        header_row.addWidget(self.back_to_browse_button)
+        self.results_count_label = QLabel()
+        self.results_count_label.setStyleSheet(f'font-size: 11px; color: {theme.TEXT_MUTED};')
+        header_row.addWidget(self.results_count_label)
+        layout.addLayout(header_row)
+
+        self.results_list = QListWidget()
+        self.results_list.setStyleSheet(theme.RESULTS_LIST_STYLE)
+        self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.results_list, stretch=1)
+
+        return card
+
+    def _on_back_to_browse(self):
+        self._load_chapter()
 
     def _load_book_chapter(self):
         self.book_combo.blockSignals(True)
@@ -375,7 +498,7 @@ class MainWindow(QMainWindow):
             return
         verse_count = self.bible.verse_count(book, chapter)
         verses = self.bible.get_verses(book, chapter, 1, verse_count) if verse_count else []
-        self._populate_results(verses)
+        self._populate_results(verses, title=f'{book} {chapter}', is_search_mode=False)
 
     def _on_search(self):
         query = self.search_edit.text().strip()
@@ -387,18 +510,25 @@ class MainWindow(QMainWindow):
             verse_count = self.bible.verse_count(book, chapter)
             verses = self.bible.get_verses(book, chapter, 1, verse_count) if verse_count else []
             select_ranges = [(r[2], r[3]) for r in ranges if r[0] == book and r[1] == chapter]
-            self._populate_results(verses, select_ranges=select_ranges)
+            self._populate_results(verses, select_ranges=select_ranges, title=f'{book} {chapter}', is_search_mode=False)
         else:
             verses = self.bible.search_text(query)
             words = [w for term in query.split(',') for w in term.split() if w.strip()]
-            self._populate_results(verses, highlight_words=words)
+            self._populate_results(verses, highlight_words=words, title=f'Results for “{query}”', is_search_mode=True)
 
     def _populate_results(
         self,
         verses: list[Verse],
         select_ranges: list[tuple[int, int]] | None = None,
         highlight_words: list[str] | None = None,
+        title: str | None = None,
+        is_search_mode: bool | None = None,
     ):
+        if title is not None:
+            self.results_title_label.setText(title)
+        if is_search_mode is not None:
+            self.back_to_browse_button.setVisible(is_search_mode)
+        self.results_count_label.setText(f'{len(verses)} verse(s)')
         self.results_list.clear()
         self.results_list.blockSignals(select_ranges is not None)
         select_items = []
@@ -436,13 +566,13 @@ class MainWindow(QMainWindow):
             if not isinstance(label, QLabel):
                 continue
             if item.isSelected():
-                label.setStyleSheet('background-color: #2563a8; color: white; border-radius: 3px;')
+                label.setStyleSheet(f'background-color: {theme.SELECTION_BG}; color: {theme.SELECTION_TEXT};')
             else:
                 label.setStyleSheet('background-color: transparent;')
 
     @staticmethod
     def _format_verse_html(v: Verse, highlight_words: list[str] | None) -> str:
-        prefix = html.escape(f'{v.book} {v.chapter}:{v.verse}  ')
+        prefix = html.escape(f'{v.verse}  ')
         text = html.escape(v.text)
         if highlight_words:
             pattern = '|'.join(re.escape(html.escape(w)) for w in highlight_words)
@@ -452,7 +582,7 @@ class MainWindow(QMainWindow):
                 text,
                 flags=re.IGNORECASE,
             )
-        return f'<b>{prefix}</b>{text}'
+        return f'<b style="color:{theme.ACCENT_700};">{prefix}</b>{text}'
 
     def _on_selection_changed(self):
         selected = self.results_list.selectedItems()

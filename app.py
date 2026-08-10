@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
+import theme
 from bible import Bible
 from main_window import MainWindow
 
@@ -41,6 +42,7 @@ def main():
             sys.exit(1)
 
     app = QApplication(sys.argv)
+    theme.load_fonts()
     bibles = discover_bibles(paths)
     window = MainWindow(bibles)
     window.show()

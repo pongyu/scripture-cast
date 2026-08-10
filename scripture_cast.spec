@@ -8,6 +8,7 @@ a = Analysis(
     datas=[
         ('bibles', 'bibles'),
         ('red_letter_kjv.json', '.'),
+        ('resources', 'resources'),
     ],
     hiddenimports=[],
     hookspath=[],
