@@ -8,6 +8,7 @@ a = Analysis(
     datas=[
         ('bibles', 'bibles'),
         ('red_letter_kjv.json', '.'),
+        ('supplied_words_kjv.json', '.'),
         ('resources', 'resources'),
     ],
     hiddenimports=[],
@@ -35,6 +36,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='resources/icon.ico',
 )
 
 coll = COLLECT(

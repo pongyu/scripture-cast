@@ -14,6 +14,7 @@ class DisplayConfig:
     maximize_text: bool = False  # when True, reference moves to a small corner badge
     show_verse_numbers: bool = True  # small superscript number before each verse's text
     red_letter: bool = True  # words of Christ in red — only has effect while KJV is active
+    supplied_words_italic: bool = True  # translator-added words in italics — KJV only
 
     @classmethod
     def load(cls) -> 'DisplayConfig':

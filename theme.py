@@ -178,6 +178,8 @@ COMBO_STYLE = f"""
         selection-background-color: {SELECTION_BG};
         selection-color: {SELECTION_TEXT};
         outline: none;
+        font-family: {FONT_BODY};
+        font-size: 13px;
     }}
 """
 
@@ -238,6 +240,9 @@ RESULTS_LIST_STYLE = f"""
         border-right: none;
         border-bottom: none;
         font-family: {FONT_BODY};
+        outline: none;
     }}
     QListWidget::item {{ border-bottom: 1px solid {DIVIDER}; }}
+    QListWidget::item:selected {{ background: transparent; border: none; }}
+    QListWidget::item:focus {{ background: transparent; border: none; }}
 """

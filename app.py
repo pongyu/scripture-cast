@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 import theme
@@ -13,6 +14,7 @@ from main_window import MainWindow
 APP_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
 BUNDLED_BIBLES_DIR = APP_DIR / 'bibles'
 OPENLP_BIBLES_DIR = Path.home() / 'AppData' / 'Roaming' / 'openlp' / 'data' / 'bibles'
+ICON_PATH = APP_DIR / 'resources' / 'icon.ico'
 
 
 def discover_bibles(paths: list[Path]) -> dict[str, Bible]:
@@ -42,6 +44,8 @@ def main():
             sys.exit(1)
 
     app = QApplication(sys.argv)
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))
     theme.load_fonts()
     bibles = discover_bibles(paths)
     window = MainWindow(bibles)

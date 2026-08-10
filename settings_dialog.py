@@ -6,8 +6,11 @@ from PySide6.QtGui import QScreen
 from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
 
 from config import DisplayConfig
-from display_window import DisplayWindow, SAMPLE_VERSE_NUMBER, SAMPLE_VERSE_REF, SAMPLE_VERSE_TEXT, verse_label_style
+from display_window import (
+    DisplayWindow, SAMPLE_VERSE_NUMBER, SAMPLE_VERSE_REF, SAMPLE_VERSE_TEXT, _apply_verse_html, verse_label_style,
+)
 import red_letter
+import supplied_words
 
 # Slider goes from 0 (Small) to 100 (Large); these map to the underlying text_size_percent range.
 MIN_TEXT_SIZE_PERCENT = 3.0
@@ -62,6 +65,16 @@ class SettingsDialog(QDialog):
         self.red_letter_checkbox.toggled.connect(self._on_config_toggled)
         layout.addWidget(self.red_letter_checkbox)
 
+        self.supplied_words_checkbox = QCheckBox('Italicize translator-supplied words')
+        self.supplied_words_checkbox.setToolTip(
+            'Shows words the KJV translators added for English readability, with no direct\n'
+            'equivalent in the original Hebrew/Greek, in italics — a traditional KJV convention.\n'
+            'Only has an effect while the King James Version is the active translation.'
+        )
+        self.supplied_words_checkbox.setChecked(self.display.config.supplied_words_italic)
+        self.supplied_words_checkbox.toggled.connect(self._on_config_toggled)
+        layout.addWidget(self.supplied_words_checkbox)
+
         layout.addWidget(QLabel('Preview — matches the selected display screen\'s shape:'))
         self.preview_box = QWidget()
         self.preview_box.setFixedWidth(PREVIEW_BOX_WIDTH)
@@ -105,6 +118,7 @@ class SettingsDialog(QDialog):
             maximize_text=self.maximize_checkbox.isChecked(),
             show_verse_numbers=self.verse_numbers_checkbox.isChecked(),
             red_letter=self.red_letter_checkbox.isChecked(),
+            supplied_words_italic=self.supplied_words_checkbox.isChecked(),
         )
         self.display.set_config(config)
         config.save()
@@ -129,12 +143,13 @@ class SettingsDialog(QDialog):
         text_css = self._scale_css_pixels(text_css, scale)
         ref_css = self._scale_css_pixels(ref_css, scale)
         self.preview_label.setStyleSheet(text_css)
-        body = SAMPLE_VERSE_TEXT
-        if self.display.config.red_letter:
-            ranges = red_letter.red_ranges('John', 3, 16, len(SAMPLE_VERSE_TEXT.rstrip('.')))
-            if ranges:
-                s, e = ranges[0]
-                body = f'<span style="color:#e03030;">{SAMPLE_VERSE_TEXT[s:e]}</span>{SAMPLE_VERSE_TEXT[e:]}'
+        sample_len = len(SAMPLE_VERSE_TEXT.rstrip('.'))
+        red_ranges = red_letter.red_ranges('John', 3, 16, sample_len) if self.display.config.red_letter else []
+        italic_ranges = (
+            supplied_words.supplied_ranges('John', 3, 16, sample_len)
+            if self.display.config.supplied_words_italic else []
+        )
+        body = _apply_verse_html(SAMPLE_VERSE_TEXT, red_ranges, italic_ranges)
         if self.display.config.show_verse_numbers:
             self.preview_label.setText(f'<sup>{SAMPLE_VERSE_NUMBER}</sup>&nbsp;{body}')
         else:

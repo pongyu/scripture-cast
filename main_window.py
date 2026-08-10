@@ -3,16 +3,18 @@ import html
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRectF, Qt
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
+import red_letter
+import supplied_words
 import theme
 from bible import Bible, Verse
-from display_window import DisplayWindow, available_screens
+from display_window import DisplayWindow, _apply_verse_html, available_screens
 from keybindings import KeyBindings
 from keybindings_dialog import KeyBindingsDialog
 from settings_dialog import SettingsDialog
@@ -115,6 +117,9 @@ class MainWindow(QMainWindow):
         self.search_edit.selectAll()
 
     def eventFilter(self, watched: QObject, event) -> bool:
+        if watched is self.results_list.viewport() and event.type() == QEvent.Type.Resize:
+            self._rewrap_results_list()
+            return False
         # Application-wide so configured shortcuts work no matter which of our windows
         # (main control panel or fullscreen display) currently has OS keyboard focus —
         # per-window QShortcuts/keyPressEvent only fire on whichever window is focused,
@@ -242,8 +247,9 @@ class MainWindow(QMainWindow):
         # until the full text fits the fixed-height box. Book/chapter/verse reference is
         # deliberately omitted here — this box is purely a visual check of the verse text.
         text_size = self._fit_live_view_font_size(text, status)
+        body_html = self.display.full_content_html()
         self.live_view_label.setText(
-            f'<div style="font-size: {text_size}px;">{html.escape(text)}</div>'
+            f'<div style="font-size: {text_size}px;">{body_html}</div>'
             f'{status}'
         )
 
@@ -466,10 +472,24 @@ class MainWindow(QMainWindow):
 
         self.results_list = QListWidget()
         self.results_list.setStyleSheet(theme.RESULTS_LIST_STYLE)
+        self.results_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.results_list, stretch=1)
 
         return card
+
+    def _rewrap_results_list(self):
+        """Item widgets don't auto-rewrap on list resize like native item text would, so
+        each row's cached size hint (set in _populate_results) is stale after the window
+        is resized — recompute it against the list's new width."""
+        wrap_width = max(self.results_list.viewport().width() - 12, 100)
+        for i in range(self.results_list.count()):
+            item = self.results_list.item(i)
+            label = self.results_list.itemWidget(item)
+            if not isinstance(label, QLabel):
+                continue
+            wrapped_height = label.heightForWidth(wrap_width)
+            item.setSizeHint(QSize(wrap_width, wrapped_height))
 
     def _on_back_to_browse(self):
         self._load_chapter()
@@ -538,6 +558,7 @@ class MainWindow(QMainWindow):
             self.results_list.addItem(item)
             label = QLabel(self._format_verse_html(v, highlight_words))
             label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
             label.setContentsMargins(6, 3, 6, 3)
             # QListWidget's native selection highlight paints behind item widgets, so it's
             # hidden by this opaque QLabel — autoFillBackground lets the label's own
@@ -545,7 +566,14 @@ class MainWindow(QMainWindow):
             # sync with the item's actual selected state.
             label.setAutoFillBackground(True)
             self.results_list.setItemWidget(item, label)
-            item.setSizeHint(label.sizeHint())
+            # sizeHint() alone measures the label's natural (unwrapped) width, which is
+            # wider than the list can display — forcing a horizontal scrollbar instead of
+            # wrapping, and in some cases under-measuring row height enough to clip
+            # descenders (e.g. "g", "y"). Force-wrap against the list's actual viewport
+            # width first so the computed height matches what will really be rendered.
+            wrap_width = max(self.results_list.viewport().width() - 12, 100)
+            wrapped_height = label.heightForWidth(wrap_width)
+            item.setSizeHint(QSize(wrap_width, wrapped_height))
             if select_ranges and any(start <= v.verse <= end for start, end in select_ranges):
                 select_items.append(item)
         if select_ranges is not None:
@@ -558,30 +586,33 @@ class MainWindow(QMainWindow):
         self._refresh_selection_highlight()
 
     def _refresh_selection_highlight(self):
-        """Recolor each result row's label to reflect its actual selection state, since
-        setItemWidget()'s opaque QLabel hides QListWidget's native selection painting."""
+        """Marks each result row's label bold/non-bold to reflect its actual selection
+        state, since setItemWidget()'s opaque QLabel hides QListWidget's native
+        selection painting — no background highlight, just a weight change."""
         for i in range(self.results_list.count()):
             item = self.results_list.item(i)
             label = self.results_list.itemWidget(item)
             if not isinstance(label, QLabel):
                 continue
-            if item.isSelected():
-                label.setStyleSheet(f'background-color: {theme.SELECTION_BG}; color: {theme.SELECTION_TEXT};')
-            else:
-                label.setStyleSheet('background-color: transparent;')
+            label.setStyleSheet('background-color: transparent;')
+            font = label.font()
+            font.setBold(item.isSelected())
+            label.setFont(font)
 
-    @staticmethod
-    def _format_verse_html(v: Verse, highlight_words: list[str] | None) -> str:
+    def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
         prefix = html.escape(f'{v.verse}  ')
-        text = html.escape(v.text)
+        is_kjv = self.display.is_kjv
+        config = self.display.config
+        red_ranges = red_letter.red_ranges(v.book, v.chapter, v.verse, len(v.text)) if is_kjv and config.red_letter else []
+        italic_ranges = (
+            supplied_words.supplied_ranges(v.book, v.chapter, v.verse, len(v.text))
+            if is_kjv and config.supplied_words_italic else []
+        )
+        highlight_ranges = []
         if highlight_words:
-            pattern = '|'.join(re.escape(html.escape(w)) for w in highlight_words)
-            text = re.sub(
-                f'({pattern})',
-                r'<span style="background-color:#fff2a8;">\1</span>',
-                text,
-                flags=re.IGNORECASE,
-            )
+            pattern = '|'.join(re.escape(w) for w in highlight_words)
+            highlight_ranges = [(m.start(), m.end()) for m in re.finditer(pattern, v.text, flags=re.IGNORECASE)]
+        text = _apply_verse_html(v.text, red_ranges, italic_ranges, highlight_ranges)
         return f'<b style="color:{theme.ACCENT_700};">{prefix}</b>{text}'
 
     def _on_selection_changed(self):

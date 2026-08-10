@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from bible import Bible, Verse
 from config import DisplayConfig
 import red_letter
+import supplied_words
 
 
 SAMPLE_VERSE_TEXT = 'For God so loved the world, that he gave his only begotten Son...'
@@ -20,8 +21,11 @@ def verse_label_style(config: DisplayConfig, height: int) -> tuple[str, str, int
     """Compute the (text_label_css, reference_label_css, text_pixel_size) for a given
     config and display height. Shared by the real DisplayWindow and any inline preview
     so they always render identically."""
-    text_size = round(height * config.text_size_percent / 100)
-    ref_size = round(height * config.ref_size_percent / 100)
+    # Floors guard against a transient height of 0 (e.g. before the widget's first
+    # layout pass) producing a zero/negative font size, which Qt logs a warning for
+    # ("QFont::setPointSize: Point size <= 0") when the size is later applied.
+    text_size = max(round(height * config.text_size_percent / 100), 1)
+    ref_size = max(round(height * config.ref_size_percent / 100), 1)
     padding = round(height * (0.025 if config.maximize_text else 0.06))
     text_css = (
         f'color: white; font-size: {text_size}px; font-family: Georgia, serif; '
@@ -48,12 +52,14 @@ def verse_label_style(config: DisplayConfig, height: int) -> tuple[str, str, int
 class _Segment:
     """One verse's text within a page, tagged with whether its number should be shown
     (continuation chunks of a word-split verse repeat the same verse but shouldn't
-    repeat the number), plus any words-of-Christ ranges (relative to this segment's
-    own text, not the full verse — matters for word-split continuation chunks)."""
+    repeat the number), plus any words-of-Christ and supplied-word ranges (both
+    relative to this segment's own text, not the full verse — matters for word-split
+    continuation chunks)."""
     verse: int
     text: str
     show_number: bool
     red_ranges: list[tuple[int, int]] = field(default_factory=list)
+    italic_ranges: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -75,7 +81,7 @@ class _Chunk:
     def to_html(self, show_numbers: bool = True) -> str:
         parts = []
         for s in self.segments:
-            body = _apply_red_letter_html(s.text, s.red_ranges)
+            body = _apply_verse_html(s.text, s.red_ranges, s.italic_ranges)
             if show_numbers and s.show_number:
                 parts.append(f'<sup>{s.verse}</sup>&nbsp;{body}')
             else:
@@ -83,20 +89,59 @@ class _Chunk:
         return ' '.join(parts)
 
 
-def _apply_red_letter_html(text: str, ranges: list[tuple[int, int]]) -> str:
-    """Escape text and wrap the given character ranges in a red <span>, without
-    breaking HTML-escaping across the boundaries of a range."""
-    if not ranges:
+def _remap_ranges_to_chunk(ranges: list[tuple[int, int]], chunk_start: int, chunk_end: int) -> list[tuple[int, int]]:
+    """Re-express full-verse character ranges relative to one word-split chunk's own
+    text, keeping only the portion that actually falls within [chunk_start, chunk_end)."""
+    chunk_len = chunk_end - chunk_start
+    return [
+        (max(0, s - chunk_start), min(chunk_len, e - chunk_start))
+        for s, e in ranges
+        if s < chunk_end and e > chunk_start
+    ]
+
+
+def _apply_verse_html(
+    text: str,
+    red_ranges: list[tuple[int, int]],
+    italic_ranges: list[tuple[int, int]],
+    highlight_ranges: list[tuple[int, int]] = (),
+) -> str:
+    """Escape text and wrap it in red-letter <span>/italic <i>/search-highlight <span>
+    markup as needed, without breaking HTML-escaping across a range boundary. Splits
+    the text into same-styled runs at every range boundary first, so a character
+    covered by more than one range (e.g. a translator-added word inside Jesus' speech)
+    gets all its styles applied together rather than producing overlapping/nested tags."""
+    if not red_ranges and not italic_ranges and not highlight_ranges:
         return html.escape(text)
+
+    boundaries = {0, len(text)}
+    for ranges in (red_ranges, italic_ranges, highlight_ranges):
+        for s, e in ranges:
+            boundaries.add(s)
+            boundaries.add(e)
+    cuts = sorted(boundaries)
+
+    def covers(ranges, pos: int) -> bool:
+        return any(s <= pos < e for s, e in ranges)
+
     pieces = []
-    cursor = 0
-    for start, end in sorted(ranges):
-        if start > cursor:
-            pieces.append(html.escape(text[cursor:start]))
-        pieces.append(f'<span style="color:#e03030;">{html.escape(text[start:end])}</span>')
-        cursor = end
-    if cursor < len(text):
-        pieces.append(html.escape(text[cursor:]))
+    for start, end in zip(cuts, cuts[1:]):
+        run = text[start:end]
+        if not run:
+            continue
+        escaped = html.escape(run)
+        is_italic = covers(italic_ranges, start)
+        is_red = covers(red_ranges, start)
+        if is_italic:
+            # Gray wins over red: a supplied word always reads as gray-italic, even
+            # inside Jesus' red speech, rather than being colored red like the rest
+            # of the surrounding red-letter run.
+            escaped = f'<span style="font-style:italic;color:#888888;">{escaped}</span>'
+        elif is_red:
+            escaped = f'<span style="color:#e03030;">{escaped}</span>'
+        if covers(highlight_ranges, start):
+            escaped = f'<span style="background-color:#fff2a8;">{escaped}</span>'
+        pieces.append(escaped)
     return ''.join(pieces)
 
 
@@ -252,6 +297,11 @@ class DisplayWindow(QWidget):
             return []
         return red_letter.red_ranges(verse.book, verse.chapter, verse.verse, len(verse.text))
 
+    def _verse_italic_ranges(self, verse: Verse) -> list[tuple[int, int]]:
+        if not self.is_kjv or not self.config.supplied_words_italic:
+            return []
+        return supplied_words.supplied_ranges(verse.book, verse.chapter, verse.verse, len(verse.text))
+
     def _split_verse_by_words(self, verse: Verse, available_width: int, available_height: int) -> list[_Chunk]:
         """Break one overlong verse into word-filled chunks, each fitting on its own page."""
         words = verse.text.split()
@@ -268,17 +318,17 @@ class DisplayWindow(QWidget):
             chunks.append(' '.join(current_words))
 
         full_red_ranges = self._verse_red_ranges(verse)
+        full_italic_ranges = self._verse_italic_ranges(verse)
         is_partial = len(chunks) > 1
         segments = []
         offset = 0
         for i, text in enumerate(chunks):
             chunk_start, chunk_end = offset, offset + len(text)
-            chunk_ranges = [
-                (max(0, s - chunk_start), min(len(text), e - chunk_start))
-                for s, e in full_red_ranges
-                if s < chunk_end and e > chunk_start
-            ]
-            segments.append(_Segment(verse.verse, text, show_number=(i == 0), red_ranges=chunk_ranges))
+            segments.append(_Segment(
+                verse.verse, text, show_number=(i == 0),
+                red_ranges=_remap_ranges_to_chunk(full_red_ranges, chunk_start, chunk_end),
+                italic_ranges=_remap_ranges_to_chunk(full_italic_ranges, chunk_start, chunk_end),
+            ))
             # +1 accounts for the space consumed by ' '.join() between chunks.
             offset = chunk_end + 1
 
@@ -316,12 +366,18 @@ class DisplayWindow(QWidget):
             if current is None:
                 current = _Chunk(
                     v.book, v.chapter, v.verse, v.verse,
-                    segments=[_Segment(v.verse, v.text, show_number=True, red_ranges=self._verse_red_ranges(v))],
+                    segments=[_Segment(
+                        v.verse, v.text, show_number=True,
+                        red_ranges=self._verse_red_ranges(v), italic_ranges=self._verse_italic_ranges(v),
+                    )],
                 )
                 continue
             candidate_text = f'{current.text} {v.text}'
             if self._fits(candidate_text, available_width, available_height):
-                new_segment = _Segment(v.verse, v.text, show_number=True, red_ranges=self._verse_red_ranges(v))
+                new_segment = _Segment(
+                    v.verse, v.text, show_number=True,
+                    red_ranges=self._verse_red_ranges(v), italic_ranges=self._verse_italic_ranges(v),
+                )
                 current = _Chunk(
                     current.book, current.chapter, current.first_verse, v.verse,
                     segments=current.segments + [new_segment],
@@ -330,11 +386,24 @@ class DisplayWindow(QWidget):
                 pages.append(current)
                 current = _Chunk(
                     v.book, v.chapter, v.verse, v.verse,
-                    segments=[_Segment(v.verse, v.text, show_number=True, red_ranges=self._verse_red_ranges(v))],
+                    segments=[_Segment(
+                        v.verse, v.text, show_number=True,
+                        red_ranges=self._verse_red_ranges(v), italic_ranges=self._verse_italic_ranges(v),
+                    )],
                 )
         if current:
             pages.append(current)
         return pages
+
+    def full_content_html(self) -> str:
+        """Like full_content()'s text, but pre-styled with red-letter/italic markup —
+        for UI that mirrors the operator's current selection with the same visual
+        treatment as the real display, e.g. the control panel's live-view mirror."""
+        pieces = [
+            _apply_verse_html(v.text, self._verse_red_ranges(v), self._verse_italic_ranges(v))
+            for v in self._verses
+        ]
+        return ' '.join(pieces)
 
     def full_content(self) -> tuple[str, str]:
         """The complete current verse selection's (text, reference), independent of how
@@ -370,7 +439,7 @@ class DisplayWindow(QWidget):
         self.content_changed.emit(*self.full_content())
         if self._blanked:
             return
-        needs_rich_text = self.config.show_verse_numbers or any(s.red_ranges for s in page.segments)
+        needs_rich_text = self.config.show_verse_numbers or any(s.red_ranges or s.italic_ranges for s in page.segments)
         if needs_rich_text:
             self.text_label.setTextFormat(Qt.TextFormat.RichText)
             self.text_label.setText(page.to_html(show_numbers=self.config.show_verse_numbers))
