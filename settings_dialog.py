@@ -55,6 +55,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(tabs)
 
         close_button = QPushButton('Close')
+        close_button.setStyleSheet(self.theme.primary_button_style)
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
 
@@ -69,6 +70,7 @@ class SettingsDialog(QDialog):
         slider_row.addWidget(QLabel('Text Size:'))
         slider_row.addWidget(QLabel('Small'))
         self.text_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.text_size_slider.setStyleSheet(self.theme.slider_style)
         self.text_size_slider.setRange(0, 100)
         self.text_size_slider.setValue(self._percent_to_slider(self.display.config.text_size_percent))
         self.text_size_slider.setToolTip('How large the verse text appears on the display screen')
@@ -78,6 +80,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(slider_row)
 
         self.maximize_checkbox = QCheckBox('Maximize text (shrink reference to a small corner label)')
+        self.maximize_checkbox.setStyleSheet(self.theme.checkbox_style)
         self.maximize_checkbox.setToolTip(
             'Frees up the row normally used by the reference line for larger verse text.\n'
             'Useful on a physically small screen (e.g. a 42" TV) where every row of height counts.'
@@ -87,6 +90,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.maximize_checkbox)
 
         self.verse_numbers_checkbox = QCheckBox('Show verse numbers')
+        self.verse_numbers_checkbox.setStyleSheet(self.theme.checkbox_style)
         self.verse_numbers_checkbox.setToolTip(
             'Shows a small number before each verse, like a printed Bible.'
         )
@@ -95,6 +99,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.verse_numbers_checkbox)
 
         self.red_letter_checkbox = QCheckBox('Red letter (words of Christ in red)')
+        self.red_letter_checkbox.setStyleSheet(self.theme.checkbox_style)
         self.red_letter_checkbox.setToolTip(
             'Shows Jesus\' spoken words in red, like a traditional red-letter Bible.\n'
             'Only has an effect while the King James Version is the active translation.'
@@ -104,6 +109,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.red_letter_checkbox)
 
         self.supplied_words_checkbox = QCheckBox('Italicize translator-supplied words')
+        self.supplied_words_checkbox.setStyleSheet(self.theme.checkbox_style)
         self.supplied_words_checkbox.setToolTip(
             'Shows words the KJV translators added for English readability, with no direct\n'
             'equivalent in the original Hebrew/Greek, in italics — a traditional KJV convention.\n'
@@ -134,6 +140,7 @@ class SettingsDialog(QDialog):
         church_name_row = QHBoxLayout()
         church_name_row.addWidget(QLabel('Church name:'))
         self.church_name_edit = QLineEdit(self.identity.config.church_name)
+        self.church_name_edit.setStyleSheet(self.theme.input_style)
         self.church_name_edit.editingFinished.connect(self._on_church_name_changed)
         church_name_row.addWidget(self.church_name_edit, stretch=1)
         layout.addLayout(church_name_row)
@@ -141,9 +148,11 @@ class SettingsDialog(QDialog):
         logo_row = QHBoxLayout()
         logo_row.addWidget(QLabel('Logo:'))
         choose_logo_button = QPushButton('Choose Logo...')
+        choose_logo_button.setStyleSheet(self.theme.button_style)
         choose_logo_button.clicked.connect(self._on_choose_logo)
         logo_row.addWidget(choose_logo_button)
         reset_logo_button = QPushButton('Use default')
+        reset_logo_button.setStyleSheet(self.theme.ghost_button_style)
         reset_logo_button.clicked.connect(self._on_reset_logo)
         logo_row.addWidget(reset_logo_button)
         logo_row.addStretch()
@@ -163,6 +172,7 @@ class SettingsDialog(QDialog):
             appearance_row.addLayout(self._make_swatch_control(field, label_text))
         appearance_row.addStretch()
         reset_theme_button = QPushButton('Reset to default')
+        reset_theme_button.setStyleSheet(self.theme.ghost_button_style)
         reset_theme_button.clicked.connect(self._on_reset_theme)
         appearance_row.addWidget(reset_theme_button, alignment=Qt.AlignmentFlag.AlignBottom)
         layout.addLayout(appearance_row)
@@ -187,15 +197,18 @@ class SettingsDialog(QDialog):
         for action, _default, label in ACTIONS:
             row = QHBoxLayout()
             edit = QKeySequenceEdit(QKeySequence(getattr(self.keybindings, action)))
+            edit.setStyleSheet(self.theme.input_style)
             self._keybinding_edits[action] = edit
             row.addWidget(edit)
             clear_button = QPushButton('Clear')
+            clear_button.setStyleSheet(self.theme.ghost_button_style)
             clear_button.clicked.connect(edit.clear)
             row.addWidget(clear_button)
             form.addRow(f'{label}:', row)
         layout.addLayout(form)
 
         save_button = QPushButton('Save Shortcuts')
+        save_button.setStyleSheet(self.theme.primary_button_style)
         save_button.clicked.connect(self._on_save_shortcuts)
         layout.addWidget(save_button, alignment=Qt.AlignmentFlag.AlignRight)
         layout.addStretch()

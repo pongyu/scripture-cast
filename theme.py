@@ -93,14 +93,11 @@ def _chevron_file_url(color: str, direction: str = 'down') -> str:
 _LUCIDE_DIR = APP_DIR / 'resources' / 'icons' / 'lucide'
 
 
-def lucide_icon(name: str, color: str, size: int = 20):
-    """Loads a vendored Lucide icon (resources/icons/lucide/<name>.svg — MIT licensed,
-    see https://lucide.dev), recolored by substituting its `currentColor` stroke and
-    rendered at `size` px, cached to disk as PNG (QIcon can load SVGs directly, but
-    caching keeps this consistent with _chevron_file_url's approach and avoids
-    re-rendering the same icon+color combination on every theme change)."""
-    from PySide6.QtGui import QIcon
-
+def _lucide_svg_file_url(name: str, color: str, size: int = 20) -> str:
+    """Renders a vendored Lucide icon (resources/icons/lucide/<name>.svg — MIT
+    licensed, see https://lucide.dev) to a cached PNG and returns a plain filesystem
+    path — for use in QSS url(), which (like _chevron_file_url) silently fails on
+    both data: and file:// URIs and wants a raw path instead."""
     _ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = _ICON_CACHE_DIR / f'lucide-{name}-{size}-{color.lstrip("#")}.png'
     if not cache_path.exists():
@@ -124,7 +121,15 @@ def lucide_icon(name: str, color: str, size: int = 20):
         renderer.render(painter, QRectF(0, 0, pixels, pixels))
         painter.end()
         image.save(str(cache_path), 'PNG')
-    return QIcon(str(cache_path))
+    return cache_path.as_posix()
+
+
+def lucide_icon(name: str, color: str, size: int = 20):
+    """Same vendored Lucide icon as _lucide_svg_file_url, wrapped as a QIcon for
+    widgets (QPushButton.setIcon etc.) rather than QSS url() references."""
+    from PySide6.QtGui import QIcon
+
+    return QIcon(_lucide_svg_file_url(name, color, size))
 
 
 @dataclass
@@ -270,6 +275,21 @@ class Theme(QObject):
             QPushButton:disabled {{ color: {self.text_muted}; border-color: {self.divider}; }}
         """
 
+        # Borderless, flat style for lightweight paired nav controls (Previous/Next),
+        # as opposed to ghost_button_style's bordered pill — these read as a tight nav
+        # cluster, not two separate full-weight buttons pinned to opposite edges.
+        self.flat_nav_button_style = f"""
+            QPushButton {{
+                background: transparent;
+                color: {self.text};
+                border: none;
+                padding: 4px 8px;
+                font-family: {FONT_BODY};
+            }}
+            QPushButton:hover {{ color: {self.accent}; }}
+            QPushButton:disabled {{ color: {self.text_muted}; }}
+        """
+
         _danger = '#c0392b'
         _danger_wash = _mix(self.divider, _danger, 0.12)
         self.danger_button_style = f"""
@@ -315,6 +335,41 @@ class Theme(QObject):
                 font-family: {FONT_BODY};
                 font-size: 13px;
             }}
+            QComboBox QAbstractItemView::item {{
+                padding: 4px 8px;
+                border: none;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: {self.selection_bg};
+                color: {self.selection_text};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {self.selection_bg};
+                color: {self.selection_text};
+            }}
+        """
+
+        self.checkbox_style = f"""
+            QCheckBox {{
+                color: {self.text};
+                font-family: {FONT_BODY};
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {self.divider};
+                border-radius: 3px;
+                background: {self.surface};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {self.accent};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {self.accent};
+                border-color: {self.accent};
+                image: url({_lucide_svg_file_url('check', '#ffffff', size=12)});
+            }}
         """
 
         self.spinbox_style = f"""
@@ -326,6 +381,8 @@ class Theme(QObject):
                 padding: 5px 8px;
                 font-family: {FONT_BODY};
                 font-size: 13px;
+                selection-background-color: {self.selection_bg};
+                selection-color: {self.selection_text};
             }}
             QSpinBox:hover {{ border-color: {self.accent}; }}
             QSpinBox::up-button, QSpinBox::down-button {{
@@ -347,6 +404,29 @@ class Theme(QObject):
             }}
         """
 
+        self.slider_style = f"""
+            QSlider::groove:horizontal {{
+                height: 4px;
+                background: {self.divider};
+                border-radius: 2px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {self.accent};
+                border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                width: 16px;
+                height: 16px;
+                margin: -6px 0;
+                background: {self.accent};
+                border: 2px solid {self.bg};
+                border-radius: 8px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: {self.accent_600};
+            }}
+        """
+
         self.input_style = f"""
             background: {self.surface};
             color: {self.text};
@@ -355,6 +435,8 @@ class Theme(QObject):
             padding: 5px 8px;
             font-family: {FONT_BODY};
             font-size: 13px;
+            selection-background-color: {self.selection_bg};
+            selection-color: {self.selection_text};
         """
 
         self.tag_outline_style = f"""

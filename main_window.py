@@ -73,6 +73,16 @@ class MainWindow(QMainWindow):
         self.preview_display = DisplayWindow(self.bible)
         self.preview_display.is_kjv = self.display.is_kjv
         self.current_verses: list[Verse] = []
+        # Whether the results list is currently showing text-search results (which
+        # can span many books/chapters, so each row needs a book/chapter prefix) or a
+        # single browsed chapter (where the book/chapter is already shown once in the
+        # results title, so each row only needs its verse number) — see
+        # _format_verse_html.
+        self._results_is_search_mode = False
+        # PowerPoint-style "type a slide number, hit Enter" verse jump — only active
+        # while the results list has focus (see eventFilter), so it never fights with
+        # typing in the search box or chapter spinner.
+        self._verse_jump_buffer = ''
         self.service = ServiceList.load()
         self.keybindings = KeyBindings.load()
         self._cards: list[QFrame] = []
@@ -101,6 +111,17 @@ class MainWindow(QMainWindow):
         body_layout.addLayout(right_column, stretch=100)
 
         outer.addWidget(body, stretch=1)
+
+        # Qt implicitly designates the first eligible QPushButton in a window as the
+        # "default button", which intercepts Return/Enter globally before it reaches
+        # whichever widget actually has focus — this silently ate the verse-jump
+        # feature's Enter key while the results list was focused. None of this
+        # window's buttons are meant to be a default-on-Enter action (Enter's
+        # behavior is already explicit via the send_to_display keybinding and the
+        # verse-jump buffer), so disable autoDefault on all of them.
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
+            button.setDefault(False)
 
         QApplication.instance().installEventFilter(self)
         self._apply_shortcuts(self.keybindings)
@@ -161,6 +182,15 @@ class MainWindow(QMainWindow):
             # this, a single physical press-and-hold can fire an action (e.g. switch
             # version) multiple times in quick succession.
             return True
+        # Global (not gated on results_list having focus) so this works the same way
+        # switch_version/show_desktop do: the fullscreen display is always-on-top and
+        # covers the control panel entirely on a single-monitor setup, so requiring a
+        # click into the results list first would make this unreachable whenever the
+        # display is actually live — which is exactly when it's most useful. Only
+        # excluded while a text field is focused, so it doesn't hijack normal typing
+        # in the search box or chapter spinner.
+        if not isinstance(QApplication.focusWidget(), (QLineEdit, QSpinBox)) and self._handle_verse_jump_key(event):
+            return True
         pressed = QKeySequence(event.keyCombination())
         for action, handler in self._action_handlers().items():
             sequence = getattr(self.keybindings, action)
@@ -176,17 +206,41 @@ class MainWindow(QMainWindow):
             return True
         return False
 
+    def _handle_verse_jump_key(self, event) -> bool:
+        """PowerPoint-style "type a number, hit Enter" verse jump: digits build up a
+        buffer and Enter selects the matching verse number within the currently
+        loaded chapter/results — same list of verses the operator is already
+        browsing or searching, not a chapter/book lookup. Works globally (not gated
+        on the results list having focus) so it's reachable even while the
+        always-on-top fullscreen display is covering the control panel. Any other
+        key (or a number with no match) just clears the buffer and falls through to
+        normal handling."""
+        key = event.key()
+        if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+            self._verse_jump_buffer += chr(key)
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            buffer, self._verse_jump_buffer = self._verse_jump_buffer, ''
+            if not buffer:
+                return False
+            target = int(buffer)
+            for i in range(self.results_list.count()):
+                item = self.results_list.item(i)
+                verse = item.data(Qt.ItemDataRole.UserRole)
+                if verse is not None and verse.verse == target:
+                    self.results_list.setCurrentItem(item)
+                    self.results_list.scrollToItem(item)
+                    return True
+            # No verse with that number in the current results — do nothing, per spec.
+            return True
+        self._verse_jump_buffer = ''
+        return False
+
     def _apply_shortcuts(self, bindings: KeyBindings):
         self.keybindings = bindings
 
     def _build_on_display_card(self) -> QFrame:
         card, layout = self._make_card('On Display')
-
-        header = QHBoxLayout()
-        self.output_tag_label = QLabel()
-        header.addStretch()
-        header.addWidget(self.output_tag_label)
-        layout.insertLayout(1, header)
 
         self.live_view_frame = QFrame()
         self.live_view_frame.setStyleSheet(f'background: {THEME.display_bg}; border: 1px solid {THEME.divider};')
@@ -219,40 +273,16 @@ class MainWindow(QMainWindow):
         self.display.content_changed.connect(lambda *_: self._sync_preview_display())
         self.display.desktop_shown_changed.connect(lambda _: self._sync_preview_display())
 
-        button_grid = QVBoxLayout()
-        top_row = QHBoxLayout()
-        self.show_display_button = QPushButton('Show Display Window')
-        self.show_display_button.setStyleSheet(THEME.primary_button_style)
-        self.show_display_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.show_display_button.setToolTip('Same as the Shift+Enter shortcut — bring the display window to the front.')
-        self.show_display_button.clicked.connect(self._on_show_display_clicked)
-        top_row.addWidget(self.show_display_button)
-
-        self.desktop_button = QPushButton('Show Desktop')
-        self.desktop_button.setStyleSheet(THEME.button_style)
-        self.desktop_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.desktop_button.setCheckable(True)
-        self.desktop_button.setToolTip('Hide the display window entirely, revealing the desktop underneath')
-        self.desktop_button.clicked.connect(self.display.set_showing_desktop)
-        self.display.desktop_shown_changed.connect(self.desktop_button.setChecked)
-        top_row.addWidget(self.desktop_button)
-        button_grid.addLayout(top_row)
-
-        self.clear_button = QPushButton('Clear (Reset)')
-        self.clear_button.setStyleSheet(THEME.danger_button_style)
-        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_button.setToolTip(
-            'Wipe the loaded verse completely. There is nothing to resume — '
-            'select or search again to show something new.'
-        )
-        self.clear_button.clicked.connect(self.display.clear)
-        button_grid.addWidget(self.clear_button)
-
-        layout.addLayout(button_grid)
-
+        # Previous/Next sit above the setup/utility actions since they're what the
+        # operator touches constantly during a service, while Show Display/Show
+        # Desktop/Clear are occasional (mostly once-per-service) actions. Styled as
+        # flat, borderless icon buttons clustered together (rather than full pill
+        # buttons pinned to opposite edges) since they're a tight, lightweight nav
+        # pair, not two separate primary actions.
         page_nav_row = QHBoxLayout()
-        self.prev_page_button = QPushButton(' Previous')
-        self.prev_page_button.setStyleSheet(THEME.ghost_button_style)
+        page_nav_row.addStretch()
+        self.prev_page_button = QPushButton(' Prev')
+        self.prev_page_button.setStyleSheet(THEME.flat_nav_button_style)
         self.prev_page_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prev_page_button.setIcon(theme.lucide_icon('chevron-left', THEME.text))
         self.prev_page_button.setToolTip(
@@ -263,17 +293,13 @@ class MainWindow(QMainWindow):
         self.prev_page_button.clicked.connect(self.display.previous_page)
         page_nav_row.addWidget(self.prev_page_button)
 
-        page_nav_row.addStretch()
-
         self.page_indicator_label = QLabel()
         self.page_indicator_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page_nav_row.addWidget(self.page_indicator_label)
 
-        page_nav_row.addStretch()
-
         self.next_page_button = QPushButton('Next ')
         self.next_page_button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.next_page_button.setStyleSheet(THEME.ghost_button_style)
+        self.next_page_button.setStyleSheet(THEME.flat_nav_button_style)
         self.next_page_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.next_page_button.setIcon(theme.lucide_icon('chevron-right', THEME.text))
         self.next_page_button.setToolTip(
@@ -283,13 +309,44 @@ class MainWindow(QMainWindow):
         )
         self.next_page_button.clicked.connect(self.display.next_page)
         page_nav_row.addWidget(self.next_page_button)
+        page_nav_row.addStretch()
         layout.addLayout(page_nav_row)
 
         self.display.page_changed.connect(self._on_page_changed)
         self._on_page_changed(0, 0)
 
+        action_row = QHBoxLayout()
+        action_row.setSpacing(theme.SPACE_2)
+        self.show_display_button = QPushButton('Show Display Window')
+        self.show_display_button.setStyleSheet(THEME.primary_button_style)
+        self.show_display_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_display_button.setToolTip('Same as the Shift+Enter shortcut — bring the display window to the front.')
+        self.show_display_button.clicked.connect(self._on_show_display_clicked)
+        action_row.addWidget(self.show_display_button)
+
+        self.desktop_button = QPushButton('Show Desktop')
+        self.desktop_button.setStyleSheet(THEME.button_style)
+        self.desktop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.desktop_button.setCheckable(True)
+        self.desktop_button.setToolTip('Hide the display window entirely, revealing the desktop underneath')
+        self.desktop_button.clicked.connect(self.display.set_showing_desktop)
+        self.display.desktop_shown_changed.connect(self.desktop_button.setChecked)
+        action_row.addWidget(self.desktop_button)
+
+        self.clear_button = QPushButton('Clear (Reset)')
+        self.clear_button.setStyleSheet(THEME.danger_button_style)
+        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_button.setToolTip(
+            'Wipe the loaded verse completely. There is nothing to resume — '
+            'select or search again to show something new.'
+        )
+        self.clear_button.clicked.connect(self.display.clear)
+        action_row.addWidget(self.clear_button)
+
+        layout.addLayout(action_row)
+
         layout.addStretch()
-        self._update_output_tag()
+        self._on_output_screen_changed()
         return card
 
     def _build_service_card(self) -> QFrame:
@@ -298,6 +355,10 @@ class MainWindow(QMainWindow):
         self.service_list = QListWidget()
         self.service_list.setStyleSheet(THEME.service_list_style)
         self.service_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Each row is 30px (see _build_service_row's fixed height) — guarantee at
+        # least 5 rows are visible before the list needs to scroll, regardless of
+        # how much leftover space the window happens to have.
+        self.service_list.setMinimumHeight(5 * 30)
         self.service_list.itemClicked.connect(self._on_service_item_activated)
         layout.addWidget(self.service_list, stretch=1)
 
@@ -413,9 +474,7 @@ class MainWindow(QMainWindow):
         self.prev_page_button.setEnabled(self.display.can_go_previous())
         self.next_page_button.setEnabled(self.display.can_go_next())
 
-    def _update_output_tag(self):
-        self.output_tag_label.setText(f'Output: Screen {self.screen_combo.currentIndex()}'.upper())
-        self.output_tag_label.setStyleSheet(THEME.tag_outline_style)
+    def _on_output_screen_changed(self):
         self._rewrap_live_view_frame()
 
     def _rewrap_live_view_frame(self):
@@ -509,15 +568,17 @@ class MainWindow(QMainWindow):
         self._update_identity()
 
         self.version_combo = QComboBox()
+        self.version_combo.setStyleSheet(THEME.combo_style)
         self.version_combo.addItems(list(self.bibles.keys()))
         self.version_combo.setCurrentText(self.version_name)
         self.version_combo.currentTextChanged.connect(self._on_version_combo_changed)
         row.addWidget(self.version_combo)
 
         self.screen_combo = QComboBox()
+        self.screen_combo.setStyleSheet(THEME.combo_style)
         for i, screen in enumerate(available_screens()):
             self.screen_combo.addItem(f'{i}: {screen.name()} ({screen.geometry().width()}x{screen.geometry().height()})')
-        self.screen_combo.currentIndexChanged.connect(lambda _: self._update_output_tag())
+        self.screen_combo.currentIndexChanged.connect(lambda _: self._on_output_screen_changed())
         row.addWidget(self.screen_combo)
 
         self.settings_button = QPushButton('Settings…')
@@ -624,6 +685,8 @@ class MainWindow(QMainWindow):
         self.book_label = QLabel('Book')
         browse_row.addWidget(self.book_label)
         self.book_combo = QComboBox()
+        self.book_combo.setStyleSheet(THEME.combo_style)
+        self.book_combo.setMaxVisibleItems(15)
         self.book_combo.currentTextChanged.connect(self._on_book_changed)
         browse_row.addWidget(self.book_combo, stretch=1)
 
@@ -748,6 +811,7 @@ class MainWindow(QMainWindow):
             self.results_title_label.setText(title)
         if is_search_mode is not None:
             self.back_to_browse_button.setVisible(is_search_mode)
+            self._results_is_search_mode = is_search_mode
         self.results_count_label.setText(f'{len(verses)} verse(s)')
         self.results_list.clear()
         self.results_list.blockSignals(select_ranges is not None)
@@ -793,7 +857,10 @@ class MainWindow(QMainWindow):
             label.setFont(font)
 
     def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
-        prefix = html.escape(f'{v.verse}  ')
+        if self._results_is_search_mode:
+            prefix = html.escape(f'{v.book} {v.chapter}:{v.verse}  ')
+        else:
+            prefix = html.escape(f'{v.verse}  ')
         is_kjv = self.display.is_kjv
         config = self.display.config
         red_ranges = red_letter.red_ranges(v.book, v.chapter, v.verse, len(v.text)) if is_kjv and config.red_letter else []
@@ -872,12 +939,12 @@ class MainWindow(QMainWindow):
         self.live_view_frame.setStyleSheet(f'background: {THEME.display_bg}; border: 1px solid {THEME.divider};')
         self.desktop_button.setStyleSheet(THEME.button_style)
         self.clear_button.setStyleSheet(THEME.danger_button_style)
-        self.prev_page_button.setStyleSheet(THEME.ghost_button_style)
-        self.next_page_button.setStyleSheet(THEME.ghost_button_style)
+        self.prev_page_button.setStyleSheet(THEME.flat_nav_button_style)
+        self.next_page_button.setStyleSheet(THEME.flat_nav_button_style)
         self.prev_page_button.setIcon(theme.lucide_icon('chevron-left', THEME.text))
         self.next_page_button.setIcon(theme.lucide_icon('chevron-right', THEME.text))
         self.page_indicator_label.setStyleSheet(f'color: {THEME.text_muted}; font-size: 12px;')
-        self._update_output_tag()
+        self._on_output_screen_changed()
 
         self.service_list.setStyleSheet(THEME.service_list_style)
         self.clear_service_button.setStyleSheet(THEME.ghost_button_style)
