@@ -164,11 +164,13 @@ class DisplayWindow(QWidget):
     # Args: (text, reference) — both '' when cleared.
     content_changed = Signal(str, str)
 
-    # Emitted when the blank-to-black state toggles. Arg: is_blanked.
-    blanked_changed = Signal(bool)
-
     # Emitted when the show-desktop state toggles. Arg: is_showing_desktop.
     desktop_shown_changed = Signal(bool)
+
+    # Emitted whenever the current page or total page count changes (page navigation,
+    # new selection, or clear). Args: (page_index_1_based, total_pages) — (0, 0) when
+    # there's nothing loaded, so the control panel can show/enable page nav accordingly.
+    page_changed = Signal(int, int)
 
     def __init__(self, bible: Bible | None = None):
         super().__init__()
@@ -203,7 +205,6 @@ class DisplayWindow(QWidget):
         self._padding = 0
         self._height = 1080
         self._width = 1920
-        self._blanked = False
         self._showing_desktop = False
         self._restore_screen: QScreen | None = None
         self.config = DisplayConfig.load()
@@ -289,6 +290,15 @@ class DisplayWindow(QWidget):
         self.setFocus(Qt.FocusReason.OtherFocusReason)
         self._repaginate_and_show()
 
+    def resize_for_thumbnail(self, width: int, height: int):
+        """Lays this window out at the given resolution without ever showing it on a real
+        screen — for a hidden instance dedicated to rendering an accurate small preview
+        of what the real display would look like at that resolution (see sync_from())."""
+        self._width = width
+        self._apply_fonts(height=height)
+        self.resize(width, height)
+        self._repaginate_and_show()
+
     def show_preview(self):
         """Show as a normal resizable window instead of fullscreen-on-a-screen.
 
@@ -318,6 +328,18 @@ class DisplayWindow(QWidget):
         """Re-split the current verses into pages sized for the (possibly new) window, then show page 1."""
         if self._verses:
             self.show_verses(self._verses)
+
+    def sync_from(self, other: 'DisplayWindow'):
+        """Matches this window's shown content and page position to another DisplayWindow's
+        current state — e.g. a hidden preview instance catching up to the real display
+        after page navigation, which happens entirely inside next_page()/previous_page()
+        and so isn't otherwise visible to whatever's driving the preview."""
+        self.bible = other.bible
+        self.is_kjv = other.is_kjv
+        self._verses = other._verses
+        self._pages = self._paginate(self._verses) if self._verses else []
+        self._page_index = min(other._page_index, max(len(self._pages) - 1, 0))
+        self._show_page()
 
     def _fits(self, text: str, available_width: int, available_height: int) -> bool:
         metrics = QFontMetrics(self.text_label.font())
@@ -430,35 +452,14 @@ class DisplayWindow(QWidget):
             pages.append(current)
         return pages
 
-    def full_content_html(self) -> str:
-        """Like full_content()'s text, but pre-styled with red-letter/italic markup —
-        for UI that mirrors the operator's current selection with the same visual
-        treatment as the real display, e.g. the control panel's live-view mirror."""
-        pieces = [
-            _apply_verse_html(v.text, self._verse_red_ranges(v), self._verse_italic_ranges(v))
-            for v in self._verses
-        ]
-        return ' '.join(pieces)
-
-    def full_content(self) -> tuple[str, str]:
-        """The complete current verse selection's (text, reference), independent of how
-        it's paginated for the real screen — e.g. no '(cont.) [1/7]' page-fragment
-        markers. Meant for UI that shows the operator what's loaded, like the control
-        panel's live-view mirror, where those pagination details aren't meaningful."""
-        if not self._verses:
-            return '', ''
-        text = ' '.join(v.text for v in self._verses)
-        book, chapter = self._verses[0].book, self._verses[0].chapter
-        first_v, last_v = self._verses[0].verse, self._verses[-1].verse
-        ref = f'{book} {chapter}:{first_v}' if first_v == last_v else f'{book} {chapter}:{first_v}-{last_v}'
-        return text, ref
-
     def _show_page(self):
         if not self._pages:
             self.text_label.setText('')
             self.reference_label.setText('')
             self.content_changed.emit('', '')
+            self.page_changed.emit(0, 0)
             return
+        self.page_changed.emit(self._page_index + 1, len(self._pages))
         page = self._pages[self._page_index]
         if page.first_verse == page.last_verse:
             ref = f'{page.book} {page.chapter}:{page.first_verse}'
@@ -468,12 +469,11 @@ class DisplayWindow(QWidget):
             ref += ' (cont.)'
         if len(self._pages) > 1:
             ref += f'  [{self._page_index + 1}/{len(self._pages)}]'
-        # content_changed reports the *full* current selection (not just this page), so
-        # the control panel's live-view mirror — which isn't screen-constrained the way
-        # the real display is — can show the whole verse rather than a page fragment.
-        self.content_changed.emit(*self.full_content())
-        if self._blanked:
-            return
+        # content_changed reports exactly what's on this page (not the whole selection),
+        # so the control panel's live-view mirror shows the same text/reference — including
+        # any "(cont.) [x/y]" marker — as the real display, instead of drifting out of sync
+        # once a long verse or multi-verse selection spans more than one page.
+        self.content_changed.emit(page.text, ref)
         needs_rich_text = self.config.show_verse_numbers or any(s.red_ranges or s.italic_ranges for s in page.segments)
         if needs_rich_text:
             self.text_label.setTextFormat(Qt.TextFormat.RichText)
@@ -485,29 +485,13 @@ class DisplayWindow(QWidget):
         if self.config.maximize_text:
             self._apply_reference_layout()
 
-    def set_blanked(self, blanked: bool):
-        """Hide the current verse text (solid black) without losing the loaded selection,
-        or restore it."""
-        if blanked == self._blanked:
-            return
-        self._blanked = blanked
-        if blanked:
-            self.text_label.setText('')
-            self.reference_label.setText('')
-        else:
-            self._show_page()
-        self.blanked_changed.emit(blanked)
-
-    def toggle_blank(self):
-        self.set_blanked(not self._blanked)
-
-    @property
-    def is_blanked(self) -> bool:
-        return self._blanked
-
     @property
     def is_showing_desktop(self) -> bool:
         return self._showing_desktop
+
+    @property
+    def has_content(self) -> bool:
+        return bool(self._verses)
 
     def set_showing_desktop(self, showing: bool):
         """Hide the display window entirely (revealing the desktop/whatever is behind it
@@ -519,8 +503,9 @@ class DisplayWindow(QWidget):
             self.hide()
         elif self._restore_screen:
             self.show_on_screen(self._restore_screen)
-        else:
-            self.show()
+        # else: the display was never shown on a real screen yet (no verse sent), so
+        # there's nothing to restore — showing a bare, unpositioned window here used to
+        # paint a stray undecorated black box over the control panel.
         self.desktop_shown_changed.emit(showing)
 
     def toggle_desktop(self):
@@ -540,6 +525,28 @@ class DisplayWindow(QWidget):
         else:
             self._go_to_adjacent_verse(forward=False)
 
+    def can_go_next(self) -> bool:
+        """Whether next_page() would do anything: either there's another page of the
+        current (word-split) selection left, or there's a next verse in the Bible to
+        advance to. False only at the very last verse of the Bible (Revelation 22:21)."""
+        if self._page_index < len(self._pages) - 1:
+            return True
+        return self._can_go_to_adjacent_verse(forward=True)
+
+    def can_go_previous(self) -> bool:
+        """Whether previous_page() would do anything — see can_go_next(). False only at
+        the very first verse of the Bible (Genesis 1:1)."""
+        if self._page_index > 0:
+            return True
+        return self._can_go_to_adjacent_verse(forward=False)
+
+    def _can_go_to_adjacent_verse(self, forward: bool) -> bool:
+        if not self.bible or not self._verses:
+            return False
+        edge_verse = self._verses[-1] if forward else self._verses[0]
+        lookup = self.bible.next_verse if forward else self.bible.previous_verse
+        return lookup(edge_verse.book, edge_verse.chapter, edge_verse.verse) is not None
+
     def _go_to_adjacent_verse(self, forward: bool):
         """At the start/end of the current selection, step to the next/previous verse in
         the Bible itself, crossing chapter and book boundaries as needed."""
@@ -558,9 +565,10 @@ class DisplayWindow(QWidget):
         self.text_label.setText('')
         self.reference_label.setText('')
         self.content_changed.emit('', '')
+        self.page_changed.emit(0, 0)
 
     def keyPressEvent(self, event):
-        # Configured action shortcuts (show_display, send_to_display, blank_display, etc.)
+        # Configured action shortcuts (show_display, send_to_display, show_desktop, etc.)
         # are handled centrally by an application-wide event filter in main_window.py, so
         # they work regardless of whether this window or the main window has OS focus.
         # Only pagination/escape — not user-configurable — are handled locally here.

@@ -90,6 +90,38 @@ def _chevron_file_url(color: str, direction: str = 'down') -> str:
     return path.as_posix()
 
 
+_LUCIDE_DIR = APP_DIR / 'resources' / 'icons' / 'lucide'
+
+
+def lucide_icon(name: str, color: str, size: int = 20):
+    """Loads a vendored Lucide icon (resources/icons/lucide/<name>.svg — MIT licensed,
+    see https://lucide.dev), recolored by substituting its `currentColor` stroke and
+    rendered at `size` px, cached to disk as PNG (QIcon can load SVGs directly, but
+    caching keeps this consistent with _chevron_file_url's approach and avoids
+    re-rendering the same icon+color combination on every theme change)."""
+    from PySide6.QtGui import QIcon
+
+    _ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = _ICON_CACHE_DIR / f'lucide-{name}-{size}-{color.lstrip("#")}.png'
+    if not cache_path.exists():
+        from PySide6.QtCore import QByteArray, Qt as _Qt
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtSvg import QSvgRenderer
+
+        svg_path = _LUCIDE_DIR / f'{name}.svg'
+        svg_data = svg_path.read_text(encoding='utf-8').replace('currentColor', color)
+        scale = 4
+        renderer = QSvgRenderer(QByteArray(svg_data.encode('utf-8')))
+        image = QImage(size * scale, size * scale, QImage.Format.Format_ARGB32)
+        image.fill(_Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(painter)
+        painter.end()
+        image.save(str(cache_path), 'PNG')
+    return QIcon(str(cache_path))
+
+
 @dataclass
 class ThemeConfig:
     bg: str = '#f2f2f3'
@@ -189,6 +221,7 @@ class Theme(QObject):
             font-family: {FONT_BODY};
         """
 
+        _hover_shade = _mix(self.divider, self.text, 0.12)
         self.button_style = f"""
             QPushButton {{
                 background: {self.divider};
@@ -198,8 +231,8 @@ class Theme(QObject):
                 padding: 6px 12px;
                 font-family: {FONT_BODY};
             }}
-            QPushButton:hover {{ background: {self.divider}; }}
-            QPushButton:pressed {{ background: {self.accent}; color: white; }}
+            QPushButton:hover {{ background: {_hover_shade}; border-color: {_hover_shade}; }}
+            QPushButton:pressed {{ background: {self.accent}; color: white; border-color: {self.accent}; }}
             QPushButton:checkable:checked {{ background: {self.accent}; color: white; border-color: {self.accent}; }}
         """
 
@@ -222,12 +255,29 @@ class Theme(QObject):
             QPushButton {{
                 background: transparent;
                 color: {self.text};
-                border: 1px solid transparent;
+                border: 1px solid {self.divider};
                 border-radius: 4px;
                 padding: 6px 10px;
                 font-family: {FONT_BODY};
             }}
             QPushButton:hover {{ background: {self.divider}; }}
+            QPushButton:pressed {{ background: {self.accent}; color: white; border-color: {self.accent}; }}
+            QPushButton:disabled {{ color: {self.text_muted}; border-color: {self.divider}; }}
+        """
+
+        _danger = '#c0392b'
+        _danger_wash = _mix(self.divider, _danger, 0.12)
+        self.danger_button_style = f"""
+            QPushButton {{
+                background: transparent;
+                color: {_danger};
+                border: 1px solid {_mix(self.divider, _danger, 0.35)};
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-family: {FONT_BODY};
+            }}
+            QPushButton:hover {{ background: {_danger_wash}; border-color: {_danger}; }}
+            QPushButton:pressed {{ background: {_danger}; color: white; border-color: {_danger}; }}
         """
 
         self.combo_style = f"""
@@ -322,8 +372,8 @@ class Theme(QObject):
                 outline: none;
             }}
             QListWidget::item {{ border-bottom: 1px solid {self.divider}; }}
-            QListWidget::item:selected {{ background: transparent; border: none; }}
-            QListWidget::item:focus {{ background: transparent; border: none; }}
+            QListWidget::item:selected {{ background: transparent; border-bottom: 1px solid {self.divider}; }}
+            QListWidget::item:focus {{ background: transparent; border-bottom: 1px solid {self.divider}; outline: none; }}
         """
 
 

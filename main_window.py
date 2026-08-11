@@ -7,7 +7,7 @@ from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QMainWindow, QPushButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
 import identity
@@ -64,6 +64,13 @@ class MainWindow(QMainWindow):
         self.bible = bibles[self.version_name]
         self.display = DisplayWindow(self.bible)
         self.display.is_kjv = _is_kjv(self.version_name)
+        # A second DisplayWindow, never shown on any real screen, dedicated to rendering
+        # the control panel's "On Display" mirror. Resizing/grabbing the real self.display
+        # for a thumbnail would visibly corrupt the actual congregation-facing output
+        # whenever it's live on a projector, so the mirror needs its own instance kept in
+        # sync with the same verses/config/version — see _sync_preview_display().
+        self.preview_display = DisplayWindow(self.bible)
+        self.preview_display.is_kjv = self.display.is_kjv
         self.current_verses: list[Verse] = []
         self.keybindings = KeyBindings.load()
         self._cards: list[QFrame] = []
@@ -115,7 +122,6 @@ class MainWindow(QMainWindow):
             'show_display': self._on_show_display_clicked,
             'send_to_display': self._on_send_clicked,
             'clear_display': self.display.clear,
-            'blank_display': self.display.toggle_blank,
             'show_desktop': self.display.toggle_desktop,
             'switch_version': self._switch_to_next_version,
             'focus_search': self._on_focus_search,
@@ -131,6 +137,9 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched: QObject, event) -> bool:
         if watched is self.results_list.viewport() and event.type() == QEvent.Type.Resize:
             self._rewrap_results_list()
+            return False
+        if watched is self.live_view_frame and event.type() == QEvent.Type.Resize:
+            self._rewrap_live_view_frame()
             return False
         # Application-wide so configured shortcuts work no matter which of our windows
         # (main control panel or fullscreen display) currently has OS keyboard focus —
@@ -170,47 +179,59 @@ class MainWindow(QMainWindow):
         header.addWidget(self.output_tag_label)
         layout.insertLayout(1, header)
 
-        self._live_view_text = ''
-        self._live_view_reference = ''
-
         self.live_view_frame = QFrame()
-        self.live_view_frame.setStyleSheet('background: #0a0a0a; border: 1px solid ' + THEME.divider + ';')
-        self.live_view_frame.setMinimumHeight(220)
-        frame_layout = QVBoxLayout(self.live_view_frame)
-        frame_layout.setContentsMargins(theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4)
+        self.live_view_frame.setStyleSheet(f'background: {THEME.display_bg}; border: 1px solid {THEME.divider};')
+        live_view_frame_layout = QVBoxLayout(self.live_view_frame)
+        live_view_frame_layout.setContentsMargins(0, 0, 0, 0)
         self.live_view_label = QLabel('(nothing shown)')
-        self.live_view_label.setWordWrap(True)
         self.live_view_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        frame_layout.addWidget(self.live_view_label)
-        layout.addWidget(self.live_view_frame, stretch=1)
+        # Without Ignored, setPixmap() below makes the label's sizeHint() grow to the
+        # pixmap's exact size — if that's ever a hair larger than the frame's current
+        # interior (e.g. rounding in the KeepAspectRatio scale), the QVBoxLayout grows
+        # the frame to fit, which re-fires the frame's Resize event, which recomputes and
+        # re-sets its height again — an infinite resize feedback loop that visibly grows
+        # the whole window. Ignoring the pixmap's own size hint breaks that cycle: the
+        # frame's size is the only thing driving the label's size, never the reverse.
+        self.live_view_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        live_view_frame_layout.addWidget(self.live_view_label)
+        layout.addWidget(self.live_view_frame)
 
-        self.display.content_changed.connect(self._on_display_content_changed)
-        self.display.blanked_changed.connect(lambda _: self._update_live_view())
-        self.display.desktop_shown_changed.connect(lambda _: self._update_live_view())
+        # A floating banner over the thumbnail (not part of the layout, so it can't affect
+        # the frame's size and re-trigger the resize loop described above) warning the
+        # operator when the real, audience-facing display doesn't currently match what
+        # this mirror shows (the desktop is showing instead of the verse).
+        self.live_view_status_label = QLabel(self.live_view_frame)
+        self.live_view_status_label.setStyleSheet(
+            'background-color: rgba(200, 40, 40, 200); color: white; font-size: 11px; '
+            'font-weight: 600; padding: 3px 8px;'
+        )
+        self.live_view_status_label.hide()
+
+        self.display.content_changed.connect(lambda *_: self._sync_preview_display())
+        self.display.desktop_shown_changed.connect(lambda _: self._sync_preview_display())
 
         button_grid = QVBoxLayout()
         top_row = QHBoxLayout()
-        self.blank_button = QPushButton('Blank (Pause)')
-        self.blank_button.setStyleSheet(THEME.button_style)
-        self.blank_button.setCheckable(True)
-        self.blank_button.setToolTip(
-            'Temporarily hide the verse text (solid black) for a pause — prayer, announcement, etc.\n'
-            'Your verse stays loaded; press again to instantly bring it back.'
-        )
-        self.blank_button.clicked.connect(self.display.set_blanked)
-        self.display.blanked_changed.connect(self.blank_button.setChecked)
+        self.show_display_button = QPushButton('Show Display Window')
+        self.show_display_button.setStyleSheet(THEME.primary_button_style)
+        self.show_display_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_display_button.setToolTip('Same as the Shift+Enter shortcut — bring the display window to the front.')
+        self.show_display_button.clicked.connect(self._on_show_display_clicked)
+        top_row.addWidget(self.show_display_button)
+
         self.desktop_button = QPushButton('Show Desktop')
         self.desktop_button.setStyleSheet(THEME.button_style)
+        self.desktop_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.desktop_button.setCheckable(True)
         self.desktop_button.setToolTip('Hide the display window entirely, revealing the desktop underneath')
         self.desktop_button.clicked.connect(self.display.set_showing_desktop)
         self.display.desktop_shown_changed.connect(self.desktop_button.setChecked)
-        top_row.addWidget(self.blank_button)
         top_row.addWidget(self.desktop_button)
         button_grid.addLayout(top_row)
 
         self.clear_button = QPushButton('Clear (Reset)')
-        self.clear_button.setStyleSheet(THEME.button_style)
+        self.clear_button.setStyleSheet(THEME.danger_button_style)
+        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_button.setToolTip(
             'Wipe the loaded verse completely. There is nothing to resume — '
             'select or search again to show something new.'
@@ -219,60 +240,119 @@ class MainWindow(QMainWindow):
         button_grid.addWidget(self.clear_button)
 
         layout.addLayout(button_grid)
+
+        page_nav_row = QHBoxLayout()
+        self.prev_page_button = QPushButton(' Previous')
+        self.prev_page_button.setStyleSheet(THEME.ghost_button_style)
+        self.prev_page_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.prev_page_button.setIcon(theme.lucide_icon('chevron-left', THEME.text))
+        self.prev_page_button.setToolTip(
+            'Same as the Left Arrow/Page Up key on the display.\n'
+            'Steps back within a long verse split across screens; at the start of the\n'
+            'current selection, moves to the previous verse in the Bible instead.'
+        )
+        self.prev_page_button.clicked.connect(self.display.previous_page)
+        page_nav_row.addWidget(self.prev_page_button)
+
+        page_nav_row.addStretch()
+
+        self.page_indicator_label = QLabel()
+        self.page_indicator_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page_nav_row.addWidget(self.page_indicator_label)
+
+        page_nav_row.addStretch()
+
+        self.next_page_button = QPushButton('Next ')
+        self.next_page_button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.next_page_button.setStyleSheet(THEME.ghost_button_style)
+        self.next_page_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.next_page_button.setIcon(theme.lucide_icon('chevron-right', THEME.text))
+        self.next_page_button.setToolTip(
+            'Same as the Right Arrow/Space/Page Down key on the display.\n'
+            'Steps forward within a long verse split across screens; at the end of the\n'
+            'current selection, moves to the next verse in the Bible instead.'
+        )
+        self.next_page_button.clicked.connect(self.display.next_page)
+        page_nav_row.addWidget(self.next_page_button)
+        layout.addLayout(page_nav_row)
+
+        self.display.page_changed.connect(self._on_page_changed)
+        self._on_page_changed(0, 0)
+
+        layout.addStretch()
         self._update_output_tag()
         return card
+
+    def _on_page_changed(self, page_index: int, total_pages: int):
+        # Only worth showing when the current verse is actually word-split across
+        # multiple screens — otherwise it'd read "1/1" for every single verse, which
+        # doesn't tell the operator anything (Next/Previous still move between verses
+        # regardless of this indicator, via the Bible itself rather than page-splitting).
+        self.page_indicator_label.setText(f'Part {page_index}/{total_pages}' if total_pages > 1 else '')
+        self.page_indicator_label.setStyleSheet(f'color: {THEME.text_muted}; font-size: 12px;')
+        self.prev_page_button.setEnabled(self.display.can_go_previous())
+        self.next_page_button.setEnabled(self.display.can_go_next())
 
     def _update_output_tag(self):
         self.output_tag_label.setText(f'Output: Screen {self.screen_combo.currentIndex()}'.upper())
         self.output_tag_label.setStyleSheet(THEME.tag_outline_style)
+        self._rewrap_live_view_frame()
 
-    def _on_display_content_changed(self, text: str, reference: str):
-        self._live_view_text = text
-        self._live_view_reference = reference
-        self._update_live_view()
+    def _rewrap_live_view_frame(self):
+        """Locks the live-view mirror's height to its current width so it always shows
+        the same aspect ratio as the selected output screen, instead of whatever shape
+        the card's layout happens to squeeze it into."""
+        width = max(self.live_view_frame.width(), 100)
+        screen_width, screen_height = self._target_screen_resolution()
+        aspect_ratio = screen_height / screen_width
+        self.live_view_frame.setFixedHeight(round(width * aspect_ratio))
+        self._sync_preview_display()
 
-    def _update_live_view(self):
-        text = self._live_view_text
-        if not text:
-            self.live_view_label.setStyleSheet(
-                'color: #777777; font-style: italic; font-family: Georgia, serif;'
-            )
+    def _target_screen_resolution(self) -> tuple[int, int]:
+        screens = available_screens()
+        index = self.screen_combo.currentIndex()
+        if 0 <= index < len(screens):
+            geometry = screens[index].geometry()
+            return geometry.width(), geometry.height()
+        return 1920, 1080
+
+    def _sync_preview_display(self):
+        """Keeps the hidden preview_display's content/page position matched to the real
+        display, resized to the selected output screen's resolution, then re-grabs it as
+        a scaled thumbnail — the mirror is a genuine rendering of what the real display
+        would show, not an approximation, the same way a presentation app's "presenter
+        view" mirrors the actual slide rather than reconstructing it separately.
+
+        preview_display is never itself hidden for "show desktop" — that's a state of the
+        real, audience-facing display only. The operator's copy keeps showing the loaded
+        verse underneath regardless, with a status note layered on top, so they can
+        always see what's queued up even while the real screen is hidden."""
+        screen_width, screen_height = self._target_screen_resolution()
+        if self.preview_display.size().toTuple() != (screen_width, screen_height):
+            self.preview_display.resize_for_thumbnail(screen_width, screen_height)
+        self.preview_display.sync_from(self.display)
+
+        if not self.display.has_content:
             self.live_view_label.setText('(nothing shown)')
+            self.live_view_label.setStyleSheet(f'color: {THEME.display_text_muted}; font-style: italic;')
+            self.live_view_status_label.hide()
             return
 
-        status = ''
-        if self.display.is_showing_desktop:
-            status = '<div style="font-size: 11px; color: #ff8888;">(desktop shown — audience does not see this)</div>'
-        elif self.display.is_blanked:
-            status = '<div style="font-size: 11px; color: #ff8888;">(blanked — audience sees black)</div>'
-
-        self.live_view_label.setStyleSheet('color: white; font-family: Georgia, serif;')
-        self.live_view_label.setTextFormat(Qt.TextFormat.RichText)
-
-        # This mirror shows the operator the whole verse, unlike the real display which
-        # is paginated to fit the screen — so instead of pagination, shrink the font here
-        # until the full text fits the fixed-height box. Book/chapter/verse reference is
-        # deliberately omitted here — this box is purely a visual check of the verse text.
-        text_size = self._fit_live_view_font_size(text, status)
-        body_html = self.display.full_content_html()
-        self.live_view_label.setText(
-            f'<div style="font-size: {text_size}px;">{body_html}</div>'
-            f'{status}'
+        pixmap = self.preview_display.grab()
+        scaled = pixmap.scaled(
+            self.live_view_frame.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
         )
+        self.live_view_label.setStyleSheet('')
+        self.live_view_label.setPixmap(scaled)
 
-    def _fit_live_view_font_size(self, text: str, status: str) -> int:
-        available_width = max(self.live_view_frame.width() - 2 * theme.SPACE_4 - 16, 100)
-        available_height = max(self.live_view_frame.height() - 2 * theme.SPACE_4, 40)
-        for text_size in range(20, 9, -1):
-            font = QFont('Georgia')
-            font.setPixelSize(text_size)
-            metrics = QFontMetrics(font)
-            bounds = metrics.boundingRect(0, 0, available_width, 0, Qt.TextFlag.TextWordWrap, text)
-            # Leave room for the status note below the verse text, if shown.
-            reserved = 16 if status else 0
-            if bounds.height() + reserved <= available_height:
-                return text_size
-        return 10
+        if self.display.is_showing_desktop:
+            self.live_view_status_label.setText('DESKTOP SHOWN — AUDIENCE DOES NOT SEE THIS')
+            self.live_view_status_label.show()
+        else:
+            self.live_view_status_label.hide()
+        self.live_view_status_label.adjustSize()
+        margin = 6
+        self.live_view_status_label.move(margin, margin)
 
     def _make_card(self, kicker: str) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
@@ -308,9 +388,6 @@ class MainWindow(QMainWindow):
         row.addStretch()
         self._update_identity()
 
-        self.version_tag_label = QLabel()
-        row.addWidget(self.version_tag_label)
-
         self.version_combo = QComboBox()
         self.version_combo.addItems(list(self.bibles.keys()))
         self.version_combo.setCurrentText(self.version_name)
@@ -323,19 +400,12 @@ class MainWindow(QMainWindow):
         self.screen_combo.currentIndexChanged.connect(lambda _: self._update_output_tag())
         row.addWidget(self.screen_combo)
 
-        self.show_display_button = QPushButton('Show Display Window')
-        self.show_display_button.clicked.connect(self._on_show_display_clicked)
-        row.addWidget(self.show_display_button)
-
         self.settings_button = QPushButton('Settings…')
+        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_button.clicked.connect(self._on_settings_clicked)
         row.addWidget(self.settings_button)
 
-        self._update_version_tag()
         return strip
-
-    def _update_version_tag(self):
-        self.version_tag_label.setText(self.version_name.upper())
 
     def _on_version_combo_changed(self, version_name: str):
         self._set_version(version_name)
@@ -352,7 +422,8 @@ class MainWindow(QMainWindow):
         self.bible = self.bibles[version_name]
         self.display.bible = self.bible
         self.display.is_kjv = _is_kjv(version_name)
-        self._update_version_tag()
+        self.preview_display.bible = self.bible
+        self.preview_display.is_kjv = self.display.is_kjv
 
         if self.version_combo.currentText() != version_name:
             self.version_combo.blockSignals(True)
@@ -407,9 +478,13 @@ class MainWindow(QMainWindow):
         screens = available_screens()
         index = self.screen_combo.currentIndex()
         screen = screens[index] if 0 <= index < len(screens) else None
-        dialog = SettingsDialog(self.display, screen, THEME, IDENTITY, self.keybindings, parent=self)
+        dialog = SettingsDialog(self.display, self.preview_display, screen, THEME, IDENTITY, self.keybindings, parent=self)
         dialog.bindings_changed.connect(self._apply_shortcuts)
         dialog.exec()
+        # Live-updates while the dialog was open only reached self.display/preview_display's
+        # own config; the mirror's rendered thumbnail itself is only refreshed on content
+        # change, so force one now in case a text-size/spacing/etc. setting changed.
+        self._sync_preview_display()
 
     def _build_find_passage_card(self) -> QFrame:
         card, layout = self._make_card('Find a Passage')
@@ -420,6 +495,7 @@ class MainWindow(QMainWindow):
         self.search_edit.returnPressed.connect(self._on_search)
         search_row.addWidget(self.search_edit, stretch=1)
         self.search_button = QPushButton('Search')
+        self.search_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.search_button.clicked.connect(self._on_search)
         search_row.addWidget(self.search_button)
         layout.addLayout(search_row)
@@ -444,6 +520,7 @@ class MainWindow(QMainWindow):
         header_row.addWidget(self.results_title_label)
         header_row.addStretch()
         self.back_to_browse_button = QPushButton('Back to browse')
+        self.back_to_browse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.back_to_browse_button.clicked.connect(self._on_back_to_browse)
         self.back_to_browse_button.hide()
         header_row.addWidget(self.back_to_browse_button)
@@ -638,10 +715,9 @@ class MainWindow(QMainWindow):
         self.identity_strip.setStyleSheet(f'background: {THEME.surface};')
         self.identity_name_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 16px;')
         self.identity_subtitle_label.setStyleSheet(f'font-size: 10px; letter-spacing: 1px; color: {THEME.text_muted};')
-        self.version_tag_label.setStyleSheet(THEME.tag_outline_style)
         self.version_combo.setStyleSheet(THEME.combo_style)
         self.screen_combo.setStyleSheet(THEME.combo_style)
-        self.show_display_button.setStyleSheet(THEME.button_style)
+        self.show_display_button.setStyleSheet(THEME.primary_button_style)
         self.settings_button.setStyleSheet(THEME.ghost_button_style)
 
         for card in self._cards:
@@ -660,10 +736,14 @@ class MainWindow(QMainWindow):
         self.results_count_label.setStyleSheet(f'font-size: 11px; color: {THEME.text_muted};')
         self.results_list.setStyleSheet(THEME.results_list_style)
 
-        self.live_view_frame.setStyleSheet('background: #0a0a0a; border: 1px solid ' + THEME.divider + ';')
-        self.blank_button.setStyleSheet(THEME.button_style)
+        self.live_view_frame.setStyleSheet(f'background: {THEME.display_bg}; border: 1px solid {THEME.divider};')
         self.desktop_button.setStyleSheet(THEME.button_style)
-        self.clear_button.setStyleSheet(THEME.button_style)
+        self.clear_button.setStyleSheet(THEME.danger_button_style)
+        self.prev_page_button.setStyleSheet(THEME.ghost_button_style)
+        self.next_page_button.setStyleSheet(THEME.ghost_button_style)
+        self.prev_page_button.setIcon(theme.lucide_icon('chevron-left', THEME.text))
+        self.next_page_button.setIcon(theme.lucide_icon('chevron-right', THEME.text))
+        self.page_indicator_label.setStyleSheet(f'color: {THEME.text_muted}; font-size: 12px;')
         self._update_output_tag()
 
         # The verse number's accent color is baked directly into each result row's HTML
@@ -679,4 +759,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.display.close()
+        self.preview_display.close()
         super().closeEvent(event)

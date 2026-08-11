@@ -31,11 +31,12 @@ class SettingsDialog(QDialog):
     bindings_changed = Signal(KeyBindings)
 
     def __init__(
-        self, display: DisplayWindow, screen: QScreen | None, theme: Theme, identity: Identity,
-        keybindings: KeyBindings, parent=None,
+        self, display: DisplayWindow, preview_display: DisplayWindow, screen: QScreen | None, theme: Theme,
+        identity: Identity, keybindings: KeyBindings, parent=None,
     ):
         super().__init__(parent)
         self.display = display
+        self.preview_display = preview_display
         self.screen = screen
         self.theme = theme
         self.identity = identity
@@ -291,6 +292,7 @@ class SettingsDialog(QDialog):
             supplied_words_italic=self.supplied_words_checkbox.isChecked(),
         )
         self.display.set_config(config)
+        self.preview_display.set_config(config)
         config.save()
         self._update_preview()
 

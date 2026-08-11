@@ -10,7 +10,6 @@ ACTIONS = [
     ('show_display', 'Shift+Return', 'Show Display Window'),
     ('send_to_display', 'Return', 'Send to Display'),
     ('clear_display', 'Ctrl+Backspace', 'Clear Display'),
-    ('blank_display', 'Ctrl+B', 'Blank/Unblank Display'),
     ('show_desktop', 'D', 'Show/Hide Desktop'),
     ('switch_version', 'Ctrl+Shift+V', 'Switch Bible Version'),
     ('focus_search', 'Ctrl+F', 'Focus Search Box'),
@@ -22,7 +21,6 @@ class KeyBindings:
     show_display: str = 'Shift+Return'
     send_to_display: str = 'Return'
     clear_display: str = 'Ctrl+Backspace'
-    blank_display: str = 'Ctrl+B'
     show_desktop: str = 'D'
     switch_version: str = 'Ctrl+Shift+V'
     focus_search: str = 'Ctrl+F'
