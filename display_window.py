@@ -10,17 +10,27 @@ from bible import Bible, Verse
 from config import DisplayConfig
 import red_letter
 import supplied_words
+import theme as theme_module
 
 
-SAMPLE_VERSE_TEXT = 'For God so loved the world, that he gave his only begotten Son...'
-SAMPLE_VERSE_REF = 'John 3:16'
-SAMPLE_VERSE_NUMBER = 16
+SAMPLE_VERSE_BOOK = 'Genesis'
+SAMPLE_VERSE_CHAPTER = 1
+SAMPLE_VERSE_NUMBER = 2
+# Narration (no red-letter) with one supplied word ("was") — unlike a Jesus-speech verse
+# such as John 3:16, this lets the base display text color and the supplied-words gray
+# both show clearly in the settings preview, instead of the whole line being red.
+SAMPLE_VERSE_TEXT = (
+    'And the earth was without form, and void; and darkness was upon the face of the '
+    'deep. And the Spirit of God moved upon the face of the waters.'
+)
+SAMPLE_VERSE_REF = f'{SAMPLE_VERSE_BOOK} {SAMPLE_VERSE_CHAPTER}:{SAMPLE_VERSE_NUMBER}'
 
 
-def verse_label_style(config: DisplayConfig, height: int) -> tuple[str, str, int]:
+def verse_label_style(config: DisplayConfig, height: int, theme: 'theme_module.Theme | None' = None) -> tuple[str, str, int]:
     """Compute the (text_label_css, reference_label_css, text_pixel_size) for a given
     config and display height. Shared by the real DisplayWindow and any inline preview
     so they always render identically."""
+    theme = theme or theme_module.instance
     # Floors guard against a transient height of 0 (e.g. before the widget's first
     # layout pass) producing a zero/negative font size, which Qt logs a warning for
     # ("QFont::setPointSize: Point size <= 0") when the size is later applied.
@@ -28,7 +38,7 @@ def verse_label_style(config: DisplayConfig, height: int) -> tuple[str, str, int
     ref_size = max(round(height * config.ref_size_percent / 100), 1)
     padding = round(height * (0.025 if config.maximize_text else 0.06))
     text_css = (
-        f'color: white; font-size: {text_size}px; font-family: Georgia, serif; '
+        f'color: {theme.display_text}; font-size: {text_size}px; font-family: Georgia, serif; '
         f'padding: {padding}px; line-height: {round(config.line_spacing_percent)}%;'
     )
     if config.maximize_text:
@@ -37,12 +47,12 @@ def verse_label_style(config: DisplayConfig, height: int) -> tuple[str, str, int
         # a physically small screen (e.g. a 42" TV) where every row of height counts.
         badge_ref_size = max(round(ref_size * 0.7), 12)
         ref_css = (
-            f'color: #999999; font-size: {badge_ref_size}px; font-family: Georgia, serif; '
-            f'background-color: rgba(0, 0, 0, 160); padding: 4px 10px; border-radius: 4px;'
+            f'color: {theme.display_text_muted}; font-size: {badge_ref_size}px; font-family: Georgia, serif; '
+            f'padding: 4px 10px;'
         )
     else:
         ref_css = (
-            f'color: #cccccc; font-size: {ref_size}px; font-family: Georgia, serif; '
+            f'color: {theme.display_text_muted}; font-size: {ref_size}px; font-family: Georgia, serif; '
             f'padding-bottom: {round(padding * 0.67)}px;'
         )
     return text_css, ref_css, text_size
@@ -105,6 +115,7 @@ def _apply_verse_html(
     red_ranges: list[tuple[int, int]],
     italic_ranges: list[tuple[int, int]],
     highlight_ranges: list[tuple[int, int]] = (),
+    theme: 'theme_module.Theme | None' = None,
 ) -> str:
     """Escape text and wrap it in red-letter <span>/italic <i>/search-highlight <span>
     markup as needed, without breaking HTML-escaping across a range boundary. Splits
@@ -113,6 +124,7 @@ def _apply_verse_html(
     gets all its styles applied together rather than producing overlapping/nested tags."""
     if not red_ranges and not italic_ranges and not highlight_ranges:
         return html.escape(text)
+    theme = theme or theme_module.instance
 
     boundaries = {0, len(text)}
     for ranges in (red_ranges, italic_ranges, highlight_ranges):
@@ -135,8 +147,9 @@ def _apply_verse_html(
         if is_italic:
             # Gray wins over red: a supplied word always reads as gray-italic, even
             # inside Jesus' red speech, rather than being colored red like the rest
-            # of the surrounding red-letter run.
-            escaped = f'<span style="font-style:italic;color:#888888;">{escaped}</span>'
+            # of the surrounding red-letter run. The gray itself is derived from the
+            # display's own text/background pair so it stays legible on any theme.
+            escaped = f'<span style="font-style:italic;color:{theme.display_supplied_words};">{escaped}</span>'
         elif is_red:
             escaped = f'<span style="color:#e03030;">{escaped}</span>'
         if covers(highlight_ranges, start):
@@ -164,7 +177,6 @@ class DisplayWindow(QWidget):
         # sets this whenever the active Bible version changes.
         self.is_kjv = True
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-        self.setStyleSheet('background-color: black;')
         # Without an explicit focus policy, this widget can never actually become the
         # OS-focused window (its default is NoFocus) — setFocus()/activateWindow() alone
         # don't fix that, so real keypresses would never be delivered to it once it's the
@@ -190,11 +202,24 @@ class DisplayWindow(QWidget):
         self._page_index = 0
         self._padding = 0
         self._height = 1080
+        self._width = 1920
         self._blanked = False
         self._showing_desktop = False
         self._restore_screen: QScreen | None = None
         self.config = DisplayConfig.load()
+        self._apply_background()
         self._apply_fonts(height=1080)
+        theme_module.instance.changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self):
+        """Live-updates the display's background/text colors when the user picks new
+        ones in Display Settings, without needing to reselect the verse."""
+        self._apply_background()
+        self._apply_fonts(height=self._height)
+        self._show_page()
+
+    def _apply_background(self):
+        self.setStyleSheet(f'background-color: {theme_module.instance.display_bg};')
 
     def set_config(self, config: DisplayConfig):
         """Apply a new font/spacing config immediately and re-paginate the current content."""
@@ -240,6 +265,14 @@ class DisplayWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Keep the tracked target size in sync with real resizes (e.g. dragging the
+        # preview window) — _paginate() reads these instead of width()/height() directly
+        # because right after show_on_screen()/showFullScreen(), the OS hasn't always
+        # applied the new geometry yet by the time pagination runs, which previously
+        # caused the first page shown after switching to the display to be paginated
+        # against the old (often much smaller) window size.
+        self._width = self.width()
+        self._height = self.height()
         if self.config.maximize_text:
             self._apply_reference_layout()
 
@@ -248,6 +281,7 @@ class DisplayWindow(QWidget):
         self._showing_desktop = False
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         geometry = screen.geometry()
+        self._width = geometry.width()
         self._apply_fonts(height=geometry.height())
         self.setGeometry(geometry)
         self.showFullScreen()
@@ -263,6 +297,7 @@ class DisplayWindow(QWidget):
         self._restore_screen = None
         self._showing_desktop = False
         self.setWindowFlags(Qt.WindowType.Window)
+        self._width = 800
         self._apply_fonts(height=450)
         self.resize(800, 450)
         self.show()
@@ -351,8 +386,8 @@ class DisplayWindow(QWidget):
         # In maximize mode the reference is a floating corner badge, not a layout row,
         # so it doesn't need to be reserved space here.
         reference_row_height = 0 if self.config.maximize_text else round(self._padding * 0.5)
-        available_height = max(self.height() - 2 * self._padding - reference_row_height, 100)
-        available_width = max(self.width() - 2 * self._padding, 200)
+        available_height = max(self._height - 2 * self._padding - reference_row_height, 100)
+        available_width = max(self._width - 2 * self._padding, 200)
 
         pages: list[_Chunk] = []
         current: _Chunk | None = None

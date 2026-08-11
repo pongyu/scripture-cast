@@ -10,16 +10,18 @@ from PySide6.QtWidgets import (
     QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
+import identity
 import red_letter
 import supplied_words
 import theme
 from bible import Bible, Verse
 from display_window import DisplayWindow, _apply_verse_html, available_screens
 from keybindings import KeyBindings
-from keybindings_dialog import KeyBindingsDialog
 from settings_dialog import SettingsDialog
 
-LOGO_PATH = theme.APP_DIR / 'resources' / 'vcbc logo.png'
+DEFAULT_LOGO_PATH = theme.APP_DIR / 'resources' / 'vcbc logo.png'
+THEME = theme.instance
+IDENTITY = identity.instance
 
 
 def _circular_pixmap(path: Path, size: int) -> QPixmap:
@@ -31,9 +33,15 @@ def _circular_pixmap(path: Path, size: int) -> QPixmap:
     result.fill(Qt.GlobalColor.transparent)
     painter = QPainter(result)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    # setClipPath's anti-aliased edge doesn't blend correctly against a transparent
+    # destination — it leaves a faint gray halo of the clipped-away corner pixels
+    # bleeding through at the circle's boundary. Drawing the mask as its own shape
+    # first, then compositing the source pixmap only where that shape was painted
+    # (SourceIn), produces a clean edge instead.
     path_clip = QPainterPath()
     path_clip.addEllipse(QRectF(0, 0, size, size))
-    painter.setClipPath(path_clip)
+    painter.fillPath(path_clip, Qt.GlobalColor.black)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
     x = (size - source.width()) // 2
     y = (size - source.height()) // 2
     painter.drawPixmap(x, y, source)
@@ -58,9 +66,10 @@ class MainWindow(QMainWindow):
         self.display.is_kjv = _is_kjv(self.version_name)
         self.current_verses: list[Verse] = []
         self.keybindings = KeyBindings.load()
+        self._cards: list[QFrame] = []
+        self._kicker_labels: list[QLabel] = []
 
         self.setWindowTitle('Scripture Cast')
-        self.setStyleSheet(f'QMainWindow {{ background: {theme.BG}; }} QWidget {{ color: {theme.TEXT}; }}')
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -81,6 +90,9 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self)
         self._apply_shortcuts(self.keybindings)
         self._load_book_chapter()
+        self._apply_theme()
+        THEME.changed.connect(self._apply_theme)
+        IDENTITY.changed.connect(self._update_identity)
 
         # Must run after all widgets/layouts exist: the toolbar row's buttons need more
         # than 720px, so Qt grows the window past any earlier resize() to fit its real
@@ -149,11 +161,6 @@ class MainWindow(QMainWindow):
     def _apply_shortcuts(self, bindings: KeyBindings):
         self.keybindings = bindings
 
-    def _on_keybindings_clicked(self):
-        dialog = KeyBindingsDialog(self.keybindings, parent=self)
-        dialog.bindings_changed.connect(self._apply_shortcuts)
-        dialog.exec()
-
     def _build_on_display_card(self) -> QFrame:
         card, layout = self._make_card('On Display')
 
@@ -167,7 +174,7 @@ class MainWindow(QMainWindow):
         self._live_view_reference = ''
 
         self.live_view_frame = QFrame()
-        self.live_view_frame.setStyleSheet('background: #0a0a0a; border: 1px solid ' + theme.DIVIDER + ';')
+        self.live_view_frame.setStyleSheet('background: #0a0a0a; border: 1px solid ' + THEME.divider + ';')
         self.live_view_frame.setMinimumHeight(220)
         frame_layout = QVBoxLayout(self.live_view_frame)
         frame_layout.setContentsMargins(theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4)
@@ -184,7 +191,7 @@ class MainWindow(QMainWindow):
         button_grid = QVBoxLayout()
         top_row = QHBoxLayout()
         self.blank_button = QPushButton('Blank (Pause)')
-        self.blank_button.setStyleSheet(theme.BUTTON_STYLE)
+        self.blank_button.setStyleSheet(THEME.button_style)
         self.blank_button.setCheckable(True)
         self.blank_button.setToolTip(
             'Temporarily hide the verse text (solid black) for a pause — prayer, announcement, etc.\n'
@@ -193,7 +200,7 @@ class MainWindow(QMainWindow):
         self.blank_button.clicked.connect(self.display.set_blanked)
         self.display.blanked_changed.connect(self.blank_button.setChecked)
         self.desktop_button = QPushButton('Show Desktop')
-        self.desktop_button.setStyleSheet(theme.BUTTON_STYLE)
+        self.desktop_button.setStyleSheet(THEME.button_style)
         self.desktop_button.setCheckable(True)
         self.desktop_button.setToolTip('Hide the display window entirely, revealing the desktop underneath')
         self.desktop_button.clicked.connect(self.display.set_showing_desktop)
@@ -203,7 +210,7 @@ class MainWindow(QMainWindow):
         button_grid.addLayout(top_row)
 
         self.clear_button = QPushButton('Clear (Reset)')
-        self.clear_button.setStyleSheet(theme.BUTTON_STYLE)
+        self.clear_button.setStyleSheet(THEME.button_style)
         self.clear_button.setToolTip(
             'Wipe the loaded verse completely. There is nothing to resume — '
             'select or search again to show something new.'
@@ -217,7 +224,7 @@ class MainWindow(QMainWindow):
 
     def _update_output_tag(self):
         self.output_tag_label.setText(f'Output: Screen {self.screen_combo.currentIndex()}'.upper())
-        self.output_tag_label.setStyleSheet(theme.TAG_OUTLINE_STYLE)
+        self.output_tag_label.setStyleSheet(THEME.tag_outline_style)
 
     def _on_display_content_changed(self, text: str, reference: str):
         self._live_view_text = text
@@ -270,77 +277,59 @@ class MainWindow(QMainWindow):
     def _make_card(self, kicker: str) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName('card')
-        card.setStyleSheet(theme.CARD_STYLE)
+        card.setStyleSheet(THEME.card_style)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(theme.SPACE_4, theme.SPACE_4, theme.SPACE_4, theme.SPACE_4)
         layout.setSpacing(theme.SPACE_3)
         kicker_label = QLabel(kicker.upper())
-        kicker_label.setStyleSheet(theme.KICKER_STYLE)
+        kicker_label.setStyleSheet(THEME.kicker_style)
         layout.addWidget(kicker_label)
+        self._cards.append(card)
+        self._kicker_labels.append(kicker_label)
         return card, layout
 
     def _build_identity_strip(self) -> QWidget:
         strip = QFrame()
-        strip.setStyleSheet(f'background: {theme.SURFACE}; border-bottom: 1px solid {theme.DIVIDER};')
+        self.identity_strip = strip
         row = QHBoxLayout(strip)
         row.setContentsMargins(theme.SPACE_4, theme.SPACE_3, theme.SPACE_4, theme.SPACE_3)
         row.setSpacing(theme.SPACE_3)
 
-        logo_label = QLabel()
-        logo_pixmap = _circular_pixmap(LOGO_PATH, 40)
-        if not logo_pixmap.isNull():
-            logo_label.setPixmap(logo_pixmap)
-        row.addWidget(logo_label)
+        self.identity_logo_label = QLabel()
+        row.addWidget(self.identity_logo_label)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
-        name_label = QLabel('Valenzuela City Baptist Church')
-        name_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 16px;')
-        subtitle_label = QLabel('SCRIPTURE CAST — OPERATOR CONSOLE')
-        subtitle_label.setStyleSheet(f'font-size: 10px; letter-spacing: 1px; color: {theme.TEXT_MUTED};')
-        title_box.addWidget(name_label)
-        title_box.addWidget(subtitle_label)
+        self.identity_name_label = QLabel()
+        self.identity_subtitle_label = QLabel('SCRIPTURE CAST — OPERATOR CONSOLE')
+        title_box.addWidget(self.identity_name_label)
+        title_box.addWidget(self.identity_subtitle_label)
         row.addLayout(title_box)
         row.addStretch()
+        self._update_identity()
 
         self.version_tag_label = QLabel()
-        self.version_tag_label.setStyleSheet(theme.TAG_OUTLINE_STYLE)
         row.addWidget(self.version_tag_label)
 
         self.version_combo = QComboBox()
-        self.version_combo.setStyleSheet(theme.COMBO_STYLE)
         self.version_combo.addItems(list(self.bibles.keys()))
         self.version_combo.setCurrentText(self.version_name)
         self.version_combo.currentTextChanged.connect(self._on_version_combo_changed)
         row.addWidget(self.version_combo)
 
         self.screen_combo = QComboBox()
-        self.screen_combo.setStyleSheet(theme.COMBO_STYLE)
         for i, screen in enumerate(available_screens()):
             self.screen_combo.addItem(f'{i}: {screen.name()} ({screen.geometry().width()}x{screen.geometry().height()})')
         self.screen_combo.currentIndexChanged.connect(lambda _: self._update_output_tag())
         row.addWidget(self.screen_combo)
 
         self.show_display_button = QPushButton('Show Display Window')
-        self.show_display_button.setStyleSheet(theme.BUTTON_STYLE)
         self.show_display_button.clicked.connect(self._on_show_display_clicked)
         row.addWidget(self.show_display_button)
 
-        self.preview_button = QPushButton('Preview')
-        self.preview_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
-        self.preview_button.setToolTip('Open the display as a normal window, for testing without a second monitor')
-        self.preview_button.clicked.connect(self.display.show_preview)
-        row.addWidget(self.preview_button)
-
-        self.settings_button = QPushButton('Display Settings…')
-        self.settings_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
+        self.settings_button = QPushButton('Settings…')
         self.settings_button.clicked.connect(self._on_settings_clicked)
         row.addWidget(self.settings_button)
-
-        self.keybindings_button = QPushButton('Shortcuts…')
-        self.keybindings_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
-        self.keybindings_button.clicked.connect(self._on_keybindings_clicked)
-        row.addWidget(self.keybindings_button)
 
         self._update_version_tag()
         return strip
@@ -418,7 +407,8 @@ class MainWindow(QMainWindow):
         screens = available_screens()
         index = self.screen_combo.currentIndex()
         screen = screens[index] if 0 <= index < len(screens) else None
-        dialog = SettingsDialog(self.display, screen, parent=self)
+        dialog = SettingsDialog(self.display, screen, THEME, IDENTITY, self.keybindings, parent=self)
+        dialog.bindings_changed.connect(self._apply_shortcuts)
         dialog.exec()
 
     def _build_find_passage_card(self) -> QFrame:
@@ -426,30 +416,24 @@ class MainWindow(QMainWindow):
 
         search_row = QHBoxLayout()
         self.search_edit = QLineEdit()
-        self.search_edit.setStyleSheet(theme.INPUT_STYLE)
         self.search_edit.setPlaceholderText('Reference (John 3:16) or text search')
         self.search_edit.returnPressed.connect(self._on_search)
         search_row.addWidget(self.search_edit, stretch=1)
         self.search_button = QPushButton('Search')
-        self.search_button.setStyleSheet(theme.BUTTON_STYLE)
         self.search_button.clicked.connect(self._on_search)
         search_row.addWidget(self.search_button)
         layout.addLayout(search_row)
 
         browse_row = QHBoxLayout()
-        book_label = QLabel('Book')
-        book_label.setStyleSheet(f'font-size: 12px; color: {theme.TEXT_MUTED};')
-        browse_row.addWidget(book_label)
+        self.book_label = QLabel('Book')
+        browse_row.addWidget(self.book_label)
         self.book_combo = QComboBox()
-        self.book_combo.setStyleSheet(theme.COMBO_STYLE)
         self.book_combo.currentTextChanged.connect(self._on_book_changed)
         browse_row.addWidget(self.book_combo, stretch=1)
 
-        chapter_label = QLabel('Chapter')
-        chapter_label.setStyleSheet(f'font-size: 12px; color: {theme.TEXT_MUTED};')
-        browse_row.addWidget(chapter_label)
+        self.chapter_label = QLabel('Chapter')
+        browse_row.addWidget(self.chapter_label)
         self.chapter_spin = QSpinBox()
-        self.chapter_spin.setStyleSheet(theme.SPINBOX_STYLE)
         self.chapter_spin.setMinimum(1)
         self.chapter_spin.valueChanged.connect(self._load_chapter)
         browse_row.addWidget(self.chapter_spin)
@@ -457,21 +441,17 @@ class MainWindow(QMainWindow):
 
         header_row = QHBoxLayout()
         self.results_title_label = QLabel()
-        self.results_title_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 15px;')
         header_row.addWidget(self.results_title_label)
         header_row.addStretch()
         self.back_to_browse_button = QPushButton('Back to browse')
-        self.back_to_browse_button.setStyleSheet(theme.GHOST_BUTTON_STYLE)
         self.back_to_browse_button.clicked.connect(self._on_back_to_browse)
         self.back_to_browse_button.hide()
         header_row.addWidget(self.back_to_browse_button)
         self.results_count_label = QLabel()
-        self.results_count_label.setStyleSheet(f'font-size: 11px; color: {theme.TEXT_MUTED};')
         header_row.addWidget(self.results_count_label)
         layout.addLayout(header_row)
 
         self.results_list = QListWidget()
-        self.results_list.setStyleSheet(theme.RESULTS_LIST_STYLE)
         self.results_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.results_list, stretch=1)
@@ -482,14 +462,25 @@ class MainWindow(QMainWindow):
         """Item widgets don't auto-rewrap on list resize like native item text would, so
         each row's cached size hint (set in _populate_results) is stale after the window
         is resized — recompute it against the list's new width."""
-        wrap_width = max(self.results_list.viewport().width() - 12, 100)
         for i in range(self.results_list.count()):
             item = self.results_list.item(i)
             label = self.results_list.itemWidget(item)
             if not isinstance(label, QLabel):
                 continue
-            wrapped_height = label.heightForWidth(wrap_width)
-            item.setSizeHint(QSize(wrap_width, wrapped_height))
+            item.setSizeHint(self._result_item_size_hint(label))
+
+    def _result_item_size_hint(self, label: QLabel) -> QSize:
+        # sizeHint() alone measures the label's natural (unwrapped) width, which is wider
+        # than the list can display — forcing a horizontal scrollbar instead of wrapping.
+        # heightForWidth() forces the wrap and gives back a height, but for rich-text
+        # labels (bold/italic spans from red-letter/supplied-words markup) it consistently
+        # under-reports the real rendered line height enough to clip ascenders/descenders
+        # or overlap the next row — so pad it with a small buffer per wrapped line.
+        wrap_width = max(self.results_list.viewport().width() - 12, 100)
+        wrapped_height = label.heightForWidth(wrap_width)
+        line_height = label.fontMetrics().height()
+        line_count = max(round(wrapped_height / max(line_height, 1)), 1)
+        return QSize(wrap_width, wrapped_height + line_count * 3)
 
     def _on_back_to_browse(self):
         self._load_chapter()
@@ -566,14 +557,7 @@ class MainWindow(QMainWindow):
             # sync with the item's actual selected state.
             label.setAutoFillBackground(True)
             self.results_list.setItemWidget(item, label)
-            # sizeHint() alone measures the label's natural (unwrapped) width, which is
-            # wider than the list can display — forcing a horizontal scrollbar instead of
-            # wrapping, and in some cases under-measuring row height enough to clip
-            # descenders (e.g. "g", "y"). Force-wrap against the list's actual viewport
-            # width first so the computed height matches what will really be rendered.
-            wrap_width = max(self.results_list.viewport().width() - 12, 100)
-            wrapped_height = label.heightForWidth(wrap_width)
-            item.setSizeHint(QSize(wrap_width, wrapped_height))
+            item.setSizeHint(self._result_item_size_hint(label))
             if select_ranges and any(start <= v.verse <= end for start, end in select_ranges):
                 select_items.append(item)
         if select_ranges is not None:
@@ -613,7 +597,7 @@ class MainWindow(QMainWindow):
             pattern = '|'.join(re.escape(w) for w in highlight_words)
             highlight_ranges = [(m.start(), m.end()) for m in re.finditer(pattern, v.text, flags=re.IGNORECASE)]
         text = _apply_verse_html(v.text, red_ranges, italic_ranges, highlight_ranges)
-        return f'<b style="color:{theme.ACCENT_700};">{prefix}</b>{text}'
+        return f'<b style="color:{THEME.accent_700};">{prefix}</b>{text}'
 
     def _on_selection_changed(self):
         selected = self.results_list.selectedItems()
@@ -631,6 +615,67 @@ class MainWindow(QMainWindow):
     def _on_send_clicked(self):
         if self.current_verses:
             self.display.show_verses(self.current_verses)
+
+    def _update_identity(self):
+        """Refreshes the identity strip's logo/church name from IDENTITY.config, both at
+        startup and live after IDENTITY.changed fires (the user picked a new logo/name
+        in Display Settings)."""
+        config = IDENTITY.config
+        logo_path = Path(config.logo_path) if config.logo_path else DEFAULT_LOGO_PATH
+        if not logo_path.exists():
+            logo_path = DEFAULT_LOGO_PATH
+        logo_pixmap = _circular_pixmap(logo_path, 40)
+        self.identity_logo_label.setPixmap(logo_pixmap if not logo_pixmap.isNull() else QPixmap())
+        self.identity_name_label.setText(config.church_name or identity.DEFAULT_CHURCH_NAME)
+
+    def _apply_theme(self):
+        """Re-applies every color-derived stylesheet after THEME.changed fires (the user
+        picked new colors in Display Settings), so the running window updates live
+        instead of requiring a restart. Mirrors the styling calls made when each widget
+        was first built in the _build_*/_make_card methods above."""
+        self.setStyleSheet(f'QMainWindow {{ background: {THEME.bg}; }} QWidget {{ color: {THEME.text}; }}')
+
+        self.identity_strip.setStyleSheet(f'background: {THEME.surface};')
+        self.identity_name_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 16px;')
+        self.identity_subtitle_label.setStyleSheet(f'font-size: 10px; letter-spacing: 1px; color: {THEME.text_muted};')
+        self.version_tag_label.setStyleSheet(THEME.tag_outline_style)
+        self.version_combo.setStyleSheet(THEME.combo_style)
+        self.screen_combo.setStyleSheet(THEME.combo_style)
+        self.show_display_button.setStyleSheet(THEME.button_style)
+        self.settings_button.setStyleSheet(THEME.ghost_button_style)
+
+        for card in self._cards:
+            card.setStyleSheet(THEME.card_style)
+        for kicker_label in self._kicker_labels:
+            kicker_label.setStyleSheet(THEME.kicker_style)
+
+        self.search_edit.setStyleSheet(THEME.input_style)
+        self.search_button.setStyleSheet(THEME.button_style)
+        self.book_label.setStyleSheet(f'font-size: 12px; color: {THEME.text_muted};')
+        self.book_combo.setStyleSheet(THEME.combo_style)
+        self.chapter_label.setStyleSheet(f'font-size: 12px; color: {THEME.text_muted};')
+        self.chapter_spin.setStyleSheet(THEME.spinbox_style)
+        self.results_title_label.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 15px;')
+        self.back_to_browse_button.setStyleSheet(THEME.ghost_button_style)
+        self.results_count_label.setStyleSheet(f'font-size: 11px; color: {THEME.text_muted};')
+        self.results_list.setStyleSheet(THEME.results_list_style)
+
+        self.live_view_frame.setStyleSheet('background: #0a0a0a; border: 1px solid ' + THEME.divider + ';')
+        self.blank_button.setStyleSheet(THEME.button_style)
+        self.desktop_button.setStyleSheet(THEME.button_style)
+        self.clear_button.setStyleSheet(THEME.button_style)
+        self._update_output_tag()
+
+        # The verse number's accent color is baked directly into each result row's HTML
+        # (not CSS), so a stylesheet re-apply alone won't pick up an accent change —
+        # re-render the currently visible rows' text to match.
+        for i in range(self.results_list.count()):
+            item = self.results_list.item(i)
+            label = self.results_list.itemWidget(item)
+            verse = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(label, QLabel) and verse is not None:
+                label.setText(self._format_verse_html(verse, None))
+        self._refresh_selection_highlight()
 
     def closeEvent(self, event):
         self.display.close()

@@ -1,16 +1,25 @@
 """Popup dialog for adjusting display text size, with a live preview shaped like the target screen."""
 import re
+from dataclasses import replace
+from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QScreen
-from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QKeySequence, QScreen
+from PySide6.QtWidgets import (
+    QCheckBox, QColorDialog, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit,
+    QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget,
+)
 
 from config import DisplayConfig
 from display_window import (
-    DisplayWindow, SAMPLE_VERSE_NUMBER, SAMPLE_VERSE_REF, SAMPLE_VERSE_TEXT, _apply_verse_html, verse_label_style,
+    DisplayWindow, SAMPLE_VERSE_BOOK, SAMPLE_VERSE_CHAPTER, SAMPLE_VERSE_NUMBER, SAMPLE_VERSE_REF, SAMPLE_VERSE_TEXT,
+    _apply_verse_html, verse_label_style,
 )
+from identity import Identity, IdentityConfig, store_logo
+from keybindings import ACTIONS, KeyBindings
 import red_letter
 import supplied_words
+from theme import Theme, ThemeConfig
 
 # Slider goes from 0 (Small) to 100 (Large); these map to the underlying text_size_percent range.
 MIN_TEXT_SIZE_PERCENT = 3.0
@@ -19,13 +28,41 @@ PREVIEW_BOX_WIDTH = 360
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, display: DisplayWindow, screen: QScreen | None, parent=None):
+    bindings_changed = Signal(KeyBindings)
+
+    def __init__(
+        self, display: DisplayWindow, screen: QScreen | None, theme: Theme, identity: Identity,
+        keybindings: KeyBindings, parent=None,
+    ):
         super().__init__(parent)
         self.display = display
         self.screen = screen
+        self.theme = theme
+        self.identity = identity
+        self.keybindings = keybindings
 
         self.setWindowTitle('Display Settings')
+        self._swatch_buttons: dict[str, QPushButton] = {}
+        self._keybinding_edits: dict[str, QKeySequenceEdit] = {}
+
         layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+        tabs.addTab(self._build_display_tab(), 'Display')
+        tabs.addTab(self._build_identity_tab(), 'Identity')
+        tabs.addTab(self._build_appearance_tab(), 'Appearance')
+        tabs.addTab(self._build_shortcuts_tab(), 'Shortcuts')
+        layout.addWidget(tabs)
+
+        close_button = QPushButton('Close')
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self._update_swatch_buttons()
+        self._update_preview()
+
+    def _build_display_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
 
         slider_row = QHBoxLayout()
         slider_row.addWidget(QLabel('Text Size:'))
@@ -78,7 +115,6 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel('Preview — matches the selected display screen\'s shape:'))
         self.preview_box = QWidget()
         self.preview_box.setFixedWidth(PREVIEW_BOX_WIDTH)
-        self.preview_box.setStyleSheet('background-color: black;')
         self.preview_label = QLabel(self.preview_box)
         self.preview_label.setWordWrap(True)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -86,12 +122,83 @@ class SettingsDialog(QDialog):
         self.preview_ref_label = QLabel(self.preview_box)
         self.preview_ref_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.preview_box, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
+        return tab
 
-        close_button = QPushButton('Close')
-        close_button.clicked.connect(self.accept)
-        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+    def _build_identity_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
 
-        self._update_preview()
+        layout.addWidget(QLabel('Shown in the control panel header:'))
+        church_name_row = QHBoxLayout()
+        church_name_row.addWidget(QLabel('Church name:'))
+        self.church_name_edit = QLineEdit(self.identity.config.church_name)
+        self.church_name_edit.editingFinished.connect(self._on_church_name_changed)
+        church_name_row.addWidget(self.church_name_edit, stretch=1)
+        layout.addLayout(church_name_row)
+
+        logo_row = QHBoxLayout()
+        logo_row.addWidget(QLabel('Logo:'))
+        choose_logo_button = QPushButton('Choose Logo...')
+        choose_logo_button.clicked.connect(self._on_choose_logo)
+        logo_row.addWidget(choose_logo_button)
+        reset_logo_button = QPushButton('Use default')
+        reset_logo_button.clicked.connect(self._on_reset_logo)
+        logo_row.addWidget(reset_logo_button)
+        logo_row.addStretch()
+        layout.addLayout(logo_row)
+        layout.addStretch()
+        return tab
+
+    def _build_appearance_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        layout.addWidget(QLabel('Control panel colors:'))
+        appearance_row = QHBoxLayout()
+        for field, label_text in (
+            ('bg', 'Background'), ('surface', 'Surface'), ('text', 'Text'), ('accent', 'Accent'),
+        ):
+            appearance_row.addLayout(self._make_swatch_control(field, label_text))
+        appearance_row.addStretch()
+        reset_theme_button = QPushButton('Reset to default')
+        reset_theme_button.clicked.connect(self._on_reset_theme)
+        appearance_row.addWidget(reset_theme_button, alignment=Qt.AlignmentFlag.AlignBottom)
+        layout.addLayout(appearance_row)
+
+        layout.addWidget(QLabel('Display screen colors:'))
+        display_appearance_row = QHBoxLayout()
+        for field, label_text in (
+            ('display_bg', 'Background'), ('display_text', 'Verse text'),
+        ):
+            display_appearance_row.addLayout(self._make_swatch_control(field, label_text))
+        display_appearance_row.addStretch()
+        layout.addLayout(display_appearance_row)
+        layout.addStretch()
+        return tab
+
+    def _build_shortcuts_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addWidget(QLabel('Click a field, then press the key combination you want. Click "Clear" to unset.'))
+
+        form = QFormLayout()
+        for action, _default, label in ACTIONS:
+            row = QHBoxLayout()
+            edit = QKeySequenceEdit(QKeySequence(getattr(self.keybindings, action)))
+            self._keybinding_edits[action] = edit
+            row.addWidget(edit)
+            clear_button = QPushButton('Clear')
+            clear_button.clicked.connect(edit.clear)
+            row.addWidget(clear_button)
+            form.addRow(f'{label}:', row)
+        layout.addLayout(form)
+
+        save_button = QPushButton('Save Shortcuts')
+        save_button.clicked.connect(self._on_save_shortcuts)
+        layout.addWidget(save_button, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addStretch()
+        return tab
 
     @staticmethod
     def _percent_to_slider(percent: float) -> int:
@@ -109,6 +216,69 @@ class SettingsDialog(QDialog):
 
     def _on_config_toggled(self, _checked: bool):
         self._apply_config()
+
+    def _on_save_shortcuts(self):
+        bindings = KeyBindings(**{
+            action: self._keybinding_edits[action].keySequence().toString()
+            for action, _default, _label in ACTIONS
+        })
+        bindings.save()
+        self.keybindings = bindings
+        self.bindings_changed.emit(bindings)
+
+    def _on_church_name_changed(self):
+        new_config = replace(self.identity.config, church_name=self.church_name_edit.text().strip())
+        self.identity.apply(new_config)
+        new_config.save()
+
+    def _on_choose_logo(self):
+        path_str, _filter = QFileDialog.getOpenFileName(
+            self, 'Choose Logo', '', 'Images (*.png *.jpg *.jpeg *.bmp *.svg)'
+        )
+        if not path_str:
+            return
+        stored_path = store_logo(Path(path_str))
+        new_config = replace(self.identity.config, logo_path=stored_path)
+        self.identity.apply(new_config)
+        new_config.save()
+
+    def _on_reset_logo(self):
+        new_config = replace(self.identity.config, logo_path='')
+        self.identity.apply(new_config)
+        new_config.save()
+
+    def _make_swatch_control(self, field: str, label_text: str) -> QVBoxLayout:
+        swatch_box = QVBoxLayout()
+        swatch_box.addWidget(QLabel(label_text))
+        button = QPushButton()
+        button.setFixedSize(48, 24)
+        button.clicked.connect(lambda _checked=False, f=field: self._on_pick_color(f))
+        swatch_box.addWidget(button)
+        self._swatch_buttons[field] = button
+        return swatch_box
+
+    def _update_swatch_buttons(self):
+        for field, button in self._swatch_buttons.items():
+            color = getattr(self.theme.config, field)
+            button.setStyleSheet(f'background-color: {color}; border: 1px solid #888;')
+
+    def _on_pick_color(self, field: str):
+        current = QColor(getattr(self.theme.config, field))
+        color = QColorDialog.getColor(current, self, f'Choose {field} color')
+        if not color.isValid():
+            return
+        new_config = replace(self.theme.config, **{field: color.name()})
+        self.theme.apply(new_config)
+        new_config.save()
+        self._update_swatch_buttons()
+        self._update_preview()
+
+    def _on_reset_theme(self):
+        default_config = ThemeConfig()
+        self.theme.apply(default_config)
+        default_config.save()
+        self._update_swatch_buttons()
+        self._update_preview()
 
     def _apply_config(self, text_size_percent: float | None = None, ref_size_percent: float | None = None):
         config = DisplayConfig(
@@ -134,6 +304,7 @@ class SettingsDialog(QDialog):
             screen_height = 1080
         preview_height = round(PREVIEW_BOX_WIDTH * aspect_ratio)
         self.preview_box.setFixedHeight(preview_height)
+        self.preview_box.setStyleSheet(f'background-color: {self.theme.display_bg};')
         self.preview_label.setFixedWidth(PREVIEW_BOX_WIDTH)
 
         # Scale down by the same factor the real display is shrunk by, so the preview's
@@ -143,10 +314,13 @@ class SettingsDialog(QDialog):
         text_css = self._scale_css_pixels(text_css, scale)
         ref_css = self._scale_css_pixels(ref_css, scale)
         self.preview_label.setStyleSheet(text_css)
-        sample_len = len(SAMPLE_VERSE_TEXT.rstrip('.'))
-        red_ranges = red_letter.red_ranges('John', 3, 16, sample_len) if self.display.config.red_letter else []
+        sample_len = len(SAMPLE_VERSE_TEXT)
+        red_ranges = (
+            red_letter.red_ranges(SAMPLE_VERSE_BOOK, SAMPLE_VERSE_CHAPTER, SAMPLE_VERSE_NUMBER, sample_len)
+            if self.display.config.red_letter else []
+        )
         italic_ranges = (
-            supplied_words.supplied_ranges('John', 3, 16, sample_len)
+            supplied_words.supplied_ranges(SAMPLE_VERSE_BOOK, SAMPLE_VERSE_CHAPTER, SAMPLE_VERSE_NUMBER, sample_len)
             if self.display.config.supplied_words_italic else []
         )
         body = _apply_verse_html(SAMPLE_VERSE_TEXT, red_ranges, italic_ranges)
