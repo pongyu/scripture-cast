@@ -13,6 +13,7 @@ ACTIONS = [
     ('show_desktop', 'D', 'Show/Hide Desktop'),
     ('switch_version', 'Ctrl+Shift+V', 'Switch Bible Version'),
     ('focus_search', 'Ctrl+F', 'Focus Search Box'),
+    ('add_to_service', 'Ctrl+=', 'Add to Service'),
 ]
 
 
@@ -24,6 +25,7 @@ class KeyBindings:
     show_desktop: str = 'D'
     switch_version: str = 'Ctrl+Shift+V'
     focus_search: str = 'Ctrl+F'
+    add_to_service: str = 'Ctrl+='
 
     @classmethod
     def load(cls) -> 'KeyBindings':

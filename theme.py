@@ -104,19 +104,24 @@ def lucide_icon(name: str, color: str, size: int = 20):
     _ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = _ICON_CACHE_DIR / f'lucide-{name}-{size}-{color.lstrip("#")}.png'
     if not cache_path.exists():
-        from PySide6.QtCore import QByteArray, Qt as _Qt
+        from PySide6.QtCore import QByteArray, QRectF, Qt as _Qt
         from PySide6.QtGui import QImage, QPainter
         from PySide6.QtSvg import QSvgRenderer
 
         svg_path = _LUCIDE_DIR / f'{name}.svg'
         svg_data = svg_path.read_text(encoding='utf-8').replace('currentColor', color)
         scale = 4
+        pixels = size * scale
         renderer = QSvgRenderer(QByteArray(svg_data.encode('utf-8')))
-        image = QImage(size * scale, size * scale, QImage.Format.Format_ARGB32)
+        image = QImage(pixels, pixels, QImage.Format.Format_ARGB32)
         image.fill(_Qt.GlobalColor.transparent)
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        renderer.render(painter)
+        # QSvgRenderer.render() without a target rect paints the SVG at its own
+        # viewBox size (24x24) positioned at the image's origin, leaving most of a
+        # larger canvas transparent — an explicit full-image rect is required to
+        # actually scale the icon up to fill `size`, not just place it in a corner.
+        renderer.render(painter, QRectF(0, 0, pixels, pixels))
         painter.end()
         image.save(str(cache_path), 'PNG')
     return QIcon(str(cache_path))
@@ -374,6 +379,26 @@ class Theme(QObject):
             QListWidget::item {{ border-bottom: 1px solid {self.divider}; }}
             QListWidget::item:selected {{ background: transparent; border-bottom: 1px solid {self.divider}; }}
             QListWidget::item:focus {{ background: transparent; border-bottom: 1px solid {self.divider}; outline: none; }}
+        """
+
+        # Unlike results_list_style (each row is an opaque rich-text QLabel widget, so
+        # QSS never needs to color the text itself), the service list uses plain
+        # QListWidgetItem text — Qt's default selection palette is white-on-accent,
+        # which without an explicit `color` here goes white-on-transparent (i.e.
+        # invisible against a light background) once selected.
+        self.service_list_style = f"""
+            QListWidget {{
+                background: transparent;
+                border: none;
+                border-top: 1px solid {self.divider};
+                font-family: {FONT_BODY};
+                font-size: 13px;
+                outline: none;
+                color: {self.text};
+            }}
+            QListWidget::item {{ border-bottom: 1px solid {self.divider}; }}
+            QListWidget::item:selected {{ background: {self.accent_100}; color: {self.selection_text}; }}
+            QListWidget::item:hover {{ background: {self.divider}; }}
         """
 
 

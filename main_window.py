@@ -7,7 +7,7 @@ from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QPushButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
+    QMainWindow, QPushButton, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
 import identity
@@ -17,6 +17,7 @@ import theme
 from bible import Bible, Verse
 from display_window import DisplayWindow, _apply_verse_html, available_screens
 from keybindings import KeyBindings
+from service import ServiceItem, ServiceList
 from settings_dialog import SettingsDialog
 
 DEFAULT_LOGO_PATH = theme.APP_DIR / 'resources' / 'vcbc logo.png'
@@ -72,6 +73,7 @@ class MainWindow(QMainWindow):
         self.preview_display = DisplayWindow(self.bible)
         self.preview_display.is_kjv = self.display.is_kjv
         self.current_verses: list[Verse] = []
+        self.service = ServiceList.load()
         self.keybindings = KeyBindings.load()
         self._cards: list[QFrame] = []
         self._kicker_labels: list[QLabel] = []
@@ -91,7 +93,13 @@ class MainWindow(QMainWindow):
         body_layout.setContentsMargins(theme.SPACE_6, theme.SPACE_6, theme.SPACE_6, theme.SPACE_6)
         body_layout.setSpacing(theme.SPACE_6)
         body_layout.addWidget(self._build_find_passage_card(), stretch=135)
-        body_layout.addWidget(self._build_on_display_card(), stretch=100)
+
+        right_column = QVBoxLayout()
+        right_column.setSpacing(theme.SPACE_6)
+        right_column.addWidget(self._build_on_display_card())
+        right_column.addWidget(self._build_service_card(), stretch=1)
+        body_layout.addLayout(right_column, stretch=100)
+
         outer.addWidget(body, stretch=1)
 
         QApplication.instance().installEventFilter(self)
@@ -105,7 +113,7 @@ class MainWindow(QMainWindow):
         # than 720px, so Qt grows the window past any earlier resize() to fit its real
         # content — centering before that happens uses the wrong (smaller) width and
         # ends up visibly off-center once the real size kicks in.
-        self.resize(max(self.sizeHint().width(), 900), 640)
+        self.resize(max(self.sizeHint().width(), 1480), 760)
         self._center_on_screen()
 
     def _center_on_screen(self):
@@ -125,6 +133,7 @@ class MainWindow(QMainWindow):
             'show_desktop': self.display.toggle_desktop,
             'switch_version': self._switch_to_next_version,
             'focus_search': self._on_focus_search,
+            'add_to_service': self._on_add_to_service_clicked,
         }
 
     def _on_focus_search(self):
@@ -282,6 +291,117 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         self._update_output_tag()
         return card
+
+    def _build_service_card(self) -> QFrame:
+        card, layout = self._make_card('Service Plan')
+
+        self.service_list = QListWidget()
+        self.service_list.setStyleSheet(THEME.service_list_style)
+        self.service_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.service_list.itemClicked.connect(self._on_service_item_activated)
+        layout.addWidget(self.service_list, stretch=1)
+
+        self.clear_service_button = QPushButton('Clear Service')
+        self.clear_service_button.setStyleSheet(THEME.ghost_button_style)
+        self.clear_service_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_service_button.clicked.connect(self._on_clear_service_clicked)
+        layout.addWidget(self.clear_service_button)
+
+        self._populate_service_list()
+        return card
+
+    def _build_service_row(self, index: int, service_item: ServiceItem) -> QWidget:
+        row = QWidget()
+        # setItemWidget() does not stretch this widget to fill the list item's taller
+        # setSizeHint() cell — without an explicit height matching that hint, Qt gives
+        # the row only its natural (smaller) sizeHint and top-anchors it within the
+        # cell, which let the button overflow the row's real bottom edge and look
+        # vertically offset from the label even though both were centered *within*
+        # the too-short row.
+        row.setFixedHeight(30)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(6, 0, 6, 0)
+        label = QLabel(service_item.label)
+        label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        row_layout.addWidget(label, stretch=1)
+        icon_size = 16
+        delete_button = QToolButton()
+        delete_button.setAutoRaise(True)
+        # QSS can restyle the button's background on :hover, but not the icon pixmap
+        # itself — without swapping to a white icon on hover, the muted gray "x"
+        # nearly disappears against the red highlight.
+        idle_icon = theme.lucide_icon('x', THEME.text_muted, size=icon_size)
+        hover_icon = theme.lucide_icon('x', '#ffffff', size=icon_size)
+        delete_button.setIcon(idle_icon)
+        delete_button.setIconSize(QSize(icon_size, icon_size))
+        delete_button.setFixedSize(24, 24)
+        delete_button.setStyleSheet(
+            'QToolButton { background: transparent; border: none; padding: 0px; margin: 0px; } '
+            f'QToolButton:hover {{ background: #c0392b; border-radius: 4px; }}'
+        )
+        delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete_button.setToolTip(f'Remove {service_item.label} from the Service Plan')
+        delete_button.clicked.connect(lambda: self._on_remove_service_item_clicked(index))
+
+        class _HoverIconSwap(QObject):
+            def eventFilter(self_filter, watched, event):
+                if event.type() == QEvent.Type.Enter:
+                    delete_button.setIcon(hover_icon)
+                elif event.type() == QEvent.Type.Leave:
+                    delete_button.setIcon(idle_icon)
+                return False
+
+        hover_filter = _HoverIconSwap(delete_button)
+        delete_button.installEventFilter(hover_filter)
+        delete_button._hover_filter = hover_filter  # keep the filter alive with the button
+
+        row_layout.addWidget(delete_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+        return row
+
+    def _populate_service_list(self):
+        self.service_list.clear()
+        for index, service_item in enumerate(self.service.items):
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, service_item)
+            self.service_list.addItem(item)
+            item.setSizeHint(QSize(0, 30))
+            self.service_list.setItemWidget(item, self._build_service_row(index, service_item))
+
+    def _on_add_to_service_clicked(self):
+        if not self.current_verses:
+            return
+        first, last = self.current_verses[0], self.current_verses[-1]
+        if first.verse == last.verse:
+            label = f'{first.book} {first.chapter}:{first.verse}'
+        else:
+            label = f'{first.book} {first.chapter}:{first.verse}-{last.verse}'
+        service_item = ServiceItem(
+            book=first.book, chapter=first.chapter, first_verse=first.verse, last_verse=last.verse, label=label,
+        )
+        self.service.items.append(service_item)
+        self.service.save()
+        self._populate_service_list()
+
+    def _on_service_item_activated(self, item: QListWidgetItem):
+        service_item: ServiceItem = item.data(Qt.ItemDataRole.UserRole)
+        verses = self.bible.get_verses(service_item.book, service_item.chapter, service_item.first_verse, service_item.last_verse)
+        if not verses:
+            return
+        self.current_verses = verses
+        self.display.show_verses(verses)
+        self.add_to_service_button.setEnabled(True)
+
+    def _on_remove_service_item_clicked(self, index: int):
+        del self.service.items[index]
+        self.service.save()
+        self._populate_service_list()
+
+    def _on_clear_service_clicked(self):
+        if not self.service.items:
+            return
+        self.service.items.clear()
+        self.service.save()
+        self._populate_service_list()
 
     def _on_page_changed(self, page_index: int, total_pages: int):
         # Only worth showing when the current verse is actually word-split across
@@ -533,6 +653,18 @@ class MainWindow(QMainWindow):
         self.results_list.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.results_list, stretch=1)
 
+        self.add_to_service_button = QPushButton('+ Add to Service')
+        self.add_to_service_button.setStyleSheet(THEME.button_style)
+        self.add_to_service_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_to_service_button.setToolTip(
+            'Same as the Ctrl+= shortcut.\n'
+            'Save the currently selected passage to the Service Plan below, so it can be\n'
+            'jumped back to later without searching again.'
+        )
+        self.add_to_service_button.clicked.connect(self._on_add_to_service_clicked)
+        self.add_to_service_button.setEnabled(False)
+        layout.addWidget(self.add_to_service_button)
+
         return card
 
     def _rewrap_results_list(self):
@@ -680,6 +812,7 @@ class MainWindow(QMainWindow):
         selected = self.results_list.selectedItems()
         self.current_verses = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
         self._refresh_selection_highlight()
+        self.add_to_service_button.setEnabled(bool(self.current_verses))
         if self.current_verses:
             self.display.show_verses(self.current_verses)
 
@@ -745,6 +878,11 @@ class MainWindow(QMainWindow):
         self.next_page_button.setIcon(theme.lucide_icon('chevron-right', THEME.text))
         self.page_indicator_label.setStyleSheet(f'color: {THEME.text_muted}; font-size: 12px;')
         self._update_output_tag()
+
+        self.service_list.setStyleSheet(THEME.service_list_style)
+        self.clear_service_button.setStyleSheet(THEME.ghost_button_style)
+        self.add_to_service_button.setStyleSheet(THEME.button_style)
+        self._populate_service_list()
 
         # The verse number's accent color is baked directly into each result row's HTML
         # (not CSS), so a stylesheet re-apply alone won't pick up an accent change —
