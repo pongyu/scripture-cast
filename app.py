@@ -1,5 +1,6 @@
 """Scripture Cast - standalone entrypoint."""
 import sys
+import traceback
 from pathlib import Path
 
 from PySide6.QtGui import QIcon
@@ -15,6 +16,23 @@ APP_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
 BUNDLED_BIBLES_DIR = APP_DIR / 'bibles'
 OPENLP_BIBLES_DIR = Path.home() / 'AppData' / 'Roaming' / 'openlp' / 'data' / 'bibles'
 ICON_PATH = APP_DIR / 'resources' / 'icon.ico'
+CRASH_LOG_PATH = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'crash.log'
+
+
+def _log_uncaught_exception(exc_type, exc_value, exc_tb):
+    """PySide6 doesn't reliably surface Python exceptions raised inside Qt signal
+    handlers/slots — on some builds an unhandled one can silently kill the whole
+    process instead of printing a traceback, which is what happened when a book
+    selection triggered a crash with nothing in stdout/stderr to show why. This
+    writes the traceback to disk before the process goes down, so a repeat has
+    something to diagnose from."""
+    text = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        CRASH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CRASH_LOG_PATH.write_text(text)
+    except OSError:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
 def discover_bibles(paths: list[Path]) -> dict[str, Bible]:
@@ -27,6 +45,7 @@ def discover_bibles(paths: list[Path]) -> dict[str, Bible]:
 
 
 def main():
+    sys.excepthook = _log_uncaught_exception
     if len(sys.argv) > 1:
         paths = [Path(p) for p in sys.argv[1:]]
         missing = [p for p in paths if not p.exists()]

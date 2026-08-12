@@ -3,7 +3,7 @@ import html
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -83,6 +83,14 @@ class MainWindow(QMainWindow):
         # while the results list has focus (see eventFilter), so it never fights with
         # typing in the search box or chapter spinner.
         self._verse_jump_buffer = ''
+        self._suppress_display_sync = False
+        # Deferred (not called synchronously — see _on_page_changed) to a single-shot
+        # timer instead of QTimer.singleShot() so a manual book/chapter pick can
+        # cancel a pending resync via .stop() before it fires and overwrites the
+        # user's own browse action with stale display state.
+        self._results_sync_timer = QTimer(self)
+        self._results_sync_timer.setSingleShot(True)
+        self._results_sync_timer.timeout.connect(self._sync_results_selection_to_display)
         self.service = ServiceList.load()
         self.keybindings = KeyBindings.load()
         self._cards: list[QFrame] = []
@@ -473,6 +481,65 @@ class MainWindow(QMainWindow):
         self.page_indicator_label.setStyleSheet(f'color: {THEME.text_muted}; font-size: 12px;')
         self.prev_page_button.setEnabled(self.display.can_go_previous())
         self.next_page_button.setEnabled(self.display.can_go_next())
+        # Deferred to the next event-loop tick rather than called synchronously here:
+        # page_changed can fire from deep inside the results list's own
+        # itemSelectionChanged handling (click a verse -> selection changes ->
+        # show_verses() -> page_changed -> back into this list's selection again),
+        # and mutating the same QListWidget's selection re-entrantly from within its
+        # own signal chain segfaults PySide6/Qt rather than raising a catchable
+        # Python exception. Running it after the current call stack unwinds keeps
+        # the same end result without the re-entrancy. Uses a restartable timer
+        # (not QTimer.singleShot) so a manual book/chapter change in the meantime can
+        # cancel this before it fires — see _on_book_changed/_load_chapter.
+        self._results_sync_timer.start(0)
+
+    def _sync_results_selection_to_display(self):
+        """Keeps the results list's highlighted row following whatever's actually on
+        the live display — page_changed fires on every navigation (Previous/Next,
+        verse-jump, or a normal click), so this is the single place that reconciles
+        the two, rather than duplicating "select this verse" logic at each call site."""
+        target = self.display.current_page_verse_range()
+        if target is None:
+            return
+        book, chapter, first_verse, last_verse = target
+        current_book = self.book_combo.currentText()
+        current_chapter = self.chapter_spin.value()
+        self._suppress_display_sync = True
+        try:
+            if self._results_is_search_mode or current_book != book or current_chapter != chapter:
+                verse_count = self.bible.verse_count(book, chapter)
+                verses = self.bible.get_verses(book, chapter, 1, verse_count) if verse_count else []
+                self.book_combo.blockSignals(True)
+                self.book_combo.setCurrentText(book)
+                self.book_combo.blockSignals(False)
+                self.chapter_spin.blockSignals(True)
+                self.chapter_spin.setValue(chapter)
+                self.chapter_spin.blockSignals(False)
+                self._populate_results(
+                    verses, select_ranges=[(first_verse, last_verse)], title=f'{book} {chapter}', is_search_mode=False,
+                )
+            else:
+                select_items = []
+                for i in range(self.results_list.count()):
+                    item = self.results_list.item(i)
+                    verse = item.data(Qt.ItemDataRole.UserRole)
+                    if verse is not None and first_verse <= verse.verse <= last_verse:
+                        select_items.append(item)
+                self.results_list.blockSignals(True)
+                self.results_list.clearSelection()
+                for item in select_items:
+                    item.setSelected(True)
+                self.results_list.blockSignals(False)
+                if select_items:
+                    self.results_list.scrollToItem(select_items[0])
+                # blockSignals() above means itemSelectionChanged never fires, so
+                # current_verses would otherwise go stale here (still pointing at
+                # whatever was last clicked, not wherever navigation actually landed)
+                # — update it the same way _on_selection_changed() would, without its
+                # show_verses() call (still suppressed).
+                self._on_selection_changed()
+        finally:
+            self._suppress_display_sync = False
 
     def _on_output_screen_changed(self):
         self._rewrap_live_view_frame()
@@ -779,6 +846,12 @@ class MainWindow(QMainWindow):
         chapter = self.chapter_spin.value()
         if not book:
             return
+        # A manual browse action always wins over a still-pending deferred resync
+        # from an earlier display-navigation event (see _on_page_changed) — without
+        # this, that stale callback could fire right after and silently overwrite
+        # the book/chapter the user just picked with whatever the display still
+        # happens to be showing.
+        self._results_sync_timer.stop()
         verse_count = self.bible.verse_count(book, chapter)
         verses = self.bible.get_verses(book, chapter, 1, verse_count) if verse_count else []
         self._populate_results(verses, title=f'{book} {chapter}', is_search_mode=False)
@@ -787,6 +860,7 @@ class MainWindow(QMainWindow):
         query = self.search_edit.text().strip()
         if not query:
             return
+        self._results_sync_timer.stop()
         ranges = self.bible.parse_reference(query)
         if ranges:
             book, chapter = ranges[0][0], ranges[0][1]
@@ -813,8 +887,16 @@ class MainWindow(QMainWindow):
             self.back_to_browse_button.setVisible(is_search_mode)
             self._results_is_search_mode = is_search_mode
         self.results_count_label.setText(f'{len(verses)} verse(s)')
+        # Blocked for the whole clear()+repopulate, not just while select_ranges is
+        # being applied — QListWidget.clear() fires itemSelectionChanged immediately
+        # if the list had a selection, even mid-repopulation with no new items yet,
+        # which let stale/incomplete selection state leak into whatever's listening
+        # (see the _sync_results_selection_to_display timer-reentrancy bug this
+        # caused: a stray itemSelectionChanged during clear() pushed the old
+        # selection back to self.display, which restarted the deferred resync timer
+        # and silently reverted a book/chapter the user had just picked).
+        self.results_list.blockSignals(True)
         self.results_list.clear()
-        self.results_list.blockSignals(select_ranges is not None)
         select_items = []
         for v in verses:
             item = QListWidgetItem()
@@ -833,12 +915,12 @@ class MainWindow(QMainWindow):
             item.setSizeHint(self._result_item_size_hint(label))
             if select_ranges and any(start <= v.verse <= end for start, end in select_ranges):
                 select_items.append(item)
+        for item in select_items:
+            item.setSelected(True)
+        self.results_list.blockSignals(False)
+        if select_items:
+            self.results_list.scrollToItem(select_items[0])
         if select_ranges is not None:
-            self.results_list.blockSignals(False)
-            for item in select_items:
-                item.setSelected(True)
-            if select_items:
-                self.results_list.scrollToItem(select_items[0])
             self._on_selection_changed()
         self._refresh_selection_highlight()
 
@@ -880,7 +962,12 @@ class MainWindow(QMainWindow):
         self.current_verses = [item.data(Qt.ItemDataRole.UserRole) for item in selected]
         self._refresh_selection_highlight()
         self.add_to_service_button.setEnabled(bool(self.current_verses))
-        if self.current_verses:
+        # Suppressed while _sync_results_selection_to_display() is re-selecting rows
+        # to follow Previous/Next/verse-jump navigation — that navigation already
+        # happened inside self.display itself, so pushing show_verses() back at it
+        # here would reset its page position (show_verses() always starts at page 0)
+        # instead of leaving whatever page it actually landed on alone.
+        if self.current_verses and not self._suppress_display_sync:
             self.display.show_verses(self.current_verses)
 
     def _on_show_display_clicked(self):

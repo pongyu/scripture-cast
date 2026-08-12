@@ -493,6 +493,17 @@ class DisplayWindow(QWidget):
     def has_content(self) -> bool:
         return bool(self._verses)
 
+    def current_page_verse_range(self) -> tuple[str, int, int, int] | None:
+        """(book, chapter, first_verse, last_verse) of whatever's currently shown, or
+        None if nothing is loaded — lets the control panel re-select the matching
+        row(s) in the results list after Previous/Next/verse-jump navigation, which
+        happens entirely inside this class and wouldn't otherwise be visible to
+        whatever's driving the results list's selection."""
+        if not self._pages:
+            return None
+        page = self._pages[self._page_index]
+        return page.book, page.chapter, page.first_verse, page.last_verse
+
     def set_showing_desktop(self, showing: bool):
         """Hide the display window entirely (revealing the desktop/whatever is behind it
         on that monitor) without losing the loaded verse, or restore fullscreen display."""
