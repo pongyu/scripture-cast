@@ -195,7 +195,11 @@ class Theme(QObject):
         self.accent_800 = _mix(c.accent, '#000000', 0.45)
         self.divider = _mix(c.bg, c.text, 0.16)
         self.text_muted = _mix(c.text, c.bg, 0.4)
-        self.selection_bg = self.accent_100
+        # Selection/hover background: a much stronger tint than accent_100 (which is
+        # nearly white and read as barely-there for selected rows/text). Kept apart
+        # from accent_100 itself since that token is still used elsewhere (e.g. the
+        # kicker/tag accents) where the very pale tint is correct.
+        self.selection_bg = _mix(c.accent, '#ffffff', 0.65)
         self.selection_text = self.accent_800
 
         self.display_bg = c.display_bg
@@ -461,6 +465,7 @@ class Theme(QObject):
             QListWidget::item {{ border-bottom: 1px solid {self.divider}; }}
             QListWidget::item:selected {{ background: transparent; border-bottom: 1px solid {self.divider}; }}
             QListWidget::item:focus {{ background: transparent; border-bottom: 1px solid {self.divider}; outline: none; }}
+            QListWidget::item:hover {{ background: {self.divider}; border-bottom: 1px solid {self.divider}; }}
         """
 
         # Unlike results_list_style (each row is an opaque rich-text QLabel widget, so

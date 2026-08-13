@@ -925,17 +925,19 @@ class MainWindow(QMainWindow):
         self._refresh_selection_highlight()
 
     def _refresh_selection_highlight(self):
-        """Marks each result row's label bold/non-bold to reflect its actual selection
-        state, since setItemWidget()'s opaque QLabel hides QListWidget's native
-        selection painting — no background highlight, just a weight change."""
+        """Paints each result row's label to reflect its actual selection state,
+        since setItemWidget()'s opaque QLabel hides QListWidget's native selection
+        painting — a background tint plus bold text, not just a weight change."""
         for i in range(self.results_list.count()):
             item = self.results_list.item(i)
             label = self.results_list.itemWidget(item)
             if not isinstance(label, QLabel):
                 continue
-            label.setStyleSheet('background-color: transparent;')
+            selected = item.isSelected()
+            background = THEME.selection_bg if selected else 'transparent'
+            label.setStyleSheet(f'background-color: {background};')
             font = label.font()
-            font.setBold(item.isSelected())
+            font.setBold(selected)
             label.setFont(font)
 
     def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
