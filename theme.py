@@ -201,6 +201,12 @@ class Theme(QObject):
         # kicker/tag accents) where the very pale tint is correct.
         self.selection_bg = _mix(c.accent, '#ffffff', 0.65)
         self.selection_text = self.accent_800
+        # Mouse text-selection (search box, dictionary popup, drag-selecting a word
+        # in a verse row): needs to read unambiguously as "this text is highlighted"
+        # even against selection_bg's own row-highlight tint sitting right behind it,
+        # so this is the solid accent color itself rather than another soft wash.
+        self.text_selection_bg = self.accent
+        self.text_selection_text = '#ffffff'
 
         self.display_bg = c.display_bg
         self.display_text = c.display_text
@@ -385,8 +391,8 @@ class Theme(QObject):
                 padding: 5px 8px;
                 font-family: {FONT_BODY};
                 font-size: 13px;
-                selection-background-color: {self.selection_bg};
-                selection-color: {self.selection_text};
+                selection-background-color: {self.text_selection_bg};
+                selection-color: {self.text_selection_text};
             }}
             QSpinBox:hover {{ border-color: {self.accent}; }}
             QSpinBox::up-button, QSpinBox::down-button {{
@@ -439,8 +445,30 @@ class Theme(QObject):
             padding: 5px 8px;
             font-family: {FONT_BODY};
             font-size: 13px;
-            selection-background-color: {self.selection_bg};
-            selection-color: {self.selection_text};
+            selection-background-color: {self.text_selection_bg};
+            selection-color: {self.text_selection_text};
+        """
+
+        self.scroll_area_style = f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 10px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {self.divider};
+                border-radius: 4px;
+                min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {self.accent}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: transparent;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
         """
 
         self.tag_outline_style = f"""

@@ -6,10 +6,11 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QPushButton, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
+import bible_dictionary
 import identity
 import red_letter
 import supplied_words
@@ -179,6 +180,8 @@ class MainWindow(QMainWindow):
         if watched is self.live_view_frame and event.type() == QEvent.Type.Resize:
             self._rewrap_live_view_frame()
             return False
+        if getattr(watched, '_is_verse_row_label', False) and self._handle_verse_label_mouse_event(watched, event):
+            return True
         # Application-wide so configured shortcuts work no matter which of our windows
         # (main control panel or fullscreen display) currently has OS keyboard focus —
         # per-window QShortcuts/keyPressEvent only fire on whichever window is focused,
@@ -212,6 +215,30 @@ class MainWindow(QMainWindow):
                 return False
             handler()
             return True
+        return False
+
+    def _handle_verse_label_mouse_event(self, label: QLabel, event) -> bool:
+        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            label._press_pos = event.position()
+            # Each row's QLabel has its own independent text-selection state, so
+            # without this a word highlighted for a dictionary lookup earlier stays
+            # visibly selected even after picking a different word in another row —
+            # clear every other row's selection whenever a new one is about to start,
+            # matching how text selection normally behaves in one place at a time.
+            for i in range(self.results_list.count()):
+                other_label = self.results_list.itemWidget(self.results_list.item(i))
+                if isinstance(other_label, QLabel) and other_label is not label:
+                    other_label.setSelection(0, 0)
+            return False  # let the label still start its own text-selection drag
+        if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            press_pos = getattr(label, '_press_pos', None)
+            moved = press_pos is not None and (event.position() - press_pos).manhattanLength() > 4
+            if not moved:
+                # A plain click, not a drag — the label consumed it for its own
+                # (empty) text selection, so the list never saw it as a row click.
+                # Select the row directly instead.
+                self.results_list.setCurrentItem(label._verse_row_item)
+            return False
         return False
 
     def _handle_verse_jump_key(self, event) -> bool:
@@ -911,6 +938,28 @@ class MainWindow(QMainWindow):
             # stylesheet background show instead; _refresh_selection_highlight keeps it in
             # sync with the item's actual selected state.
             label.setAutoFillBackground(True)
+            # Lets the operator drag-select a word in the verse text and right-click
+            # it to look up a definition — see _on_verse_label_context_menu.
+            # TextSelectableByMouse implicitly makes Qt give the label ClickFocus,
+            # which caused the row underneath to visibly "select" just from mouse
+            # movement — these labels should only ever participate in text
+            # selection, never in keyboard focus/tab order, so force it back off.
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            label.customContextMenuRequested.connect(
+                lambda pos, lbl=label: self._on_verse_label_context_menu(lbl, pos)
+            )
+            # TextSelectableByMouse also means the label consumes left-clicks for its
+            # own text cursor, so a plain click no longer reaches the QListWidget
+            # underneath as a "select this row" event — _is_verse_row_label +
+            # eventFilter's mouse handling (see _handle_verse_label_mouse_event)
+            # restores that: a click with no real drag still selects the row, while
+            # an actual click-and-drag still highlights a word for the dictionary
+            # lookup, same as before this feature existed.
+            label._is_verse_row_label = True
+            label._verse_row_item = item
+            label.installEventFilter(self)
             self.results_list.setItemWidget(item, label)
             item.setSizeHint(self._result_item_size_hint(label))
             if select_ranges and any(start <= v.verse <= end for start, end in select_ranges):
@@ -935,10 +984,75 @@ class MainWindow(QMainWindow):
                 continue
             selected = item.isSelected()
             background = THEME.selection_bg if selected else 'transparent'
-            label.setStyleSheet(f'background-color: {background};')
+            label.setStyleSheet(
+                f'background-color: {background}; '
+                f'selection-background-color: {THEME.text_selection_bg}; selection-color: {THEME.text_selection_text};'
+            )
             font = label.font()
             font.setBold(selected)
             label.setFont(font)
+
+    def _on_verse_label_context_menu(self, label: QLabel, pos):
+        selected_text = label.selectedText().strip()
+        # Selecting rich-text spanning HTML formatting (e.g. a red-letter/italic
+        # boundary) can pick up stray whitespace/punctuation at the edges — trim to
+        # the actual word(s) a dictionary headword would match against.
+        word = selected_text.strip(' \t\n.,;:!?"\'()[]')
+        if not word:
+            # No menu at all rather than a disabled placeholder item — right-clicking
+            # with nothing selected shouldn't produce a UI element with no obvious
+            # purpose. The hover tooltip (set once per label at creation) covers the
+            # "how do I use this" discovery instead.
+            return
+        menu = QMenu(self)
+        lookup_action = menu.addAction(f'Look up “{word}” in Bible Dictionary')
+        lookup_action.triggered.connect(lambda: self._show_dictionary_lookup(word))
+        menu.exec(label.mapToGlobal(pos))
+
+    def _show_dictionary_lookup(self, word: str):
+        definition = bible_dictionary.lookup(word)
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Bible Dictionary')
+        dialog.setMinimumWidth(440)
+        dialog.setMaximumWidth(560)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(theme.SPACE_6, theme.SPACE_6, theme.SPACE_6, theme.SPACE_6)
+        layout.setSpacing(theme.SPACE_3)
+
+        kicker = QLabel('BIBLE DICTIONARY — EASTON\'S')
+        kicker.setStyleSheet(THEME.kicker_style)
+        layout.addWidget(kicker)
+
+        headword = QLabel(html.escape(word))
+        headword.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 20px; color: {THEME.text};')
+        layout.addWidget(headword)
+
+        body = QLabel(html.escape(definition) if definition else f'No entry found for “{html.escape(word)}”.')
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setStyleSheet(
+            f'color: {THEME.text if definition else THEME.text_muted}; font-size: 13px; line-height: 150%; '
+            f'selection-background-color: {THEME.text_selection_bg}; selection-color: {THEME.text_selection_text};'
+        )
+
+        # Some Easton's entries (e.g. "heaven") run long — cap the dialog's growth
+        # with a scroll area rather than letting it stretch past the screen.
+        scroll = QScrollArea()
+        scroll.setWidget(body)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setMaximumHeight(360)
+        scroll.setStyleSheet(THEME.scroll_area_style)
+        layout.addWidget(scroll)
+
+        close_button = QPushButton('Close')
+        close_button.setStyleSheet(THEME.primary_button_style)
+        close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+        dialog.setStyleSheet(f'QDialog {{ background: {THEME.bg}; }}')
+        dialog.exec()
 
     def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
         if self._results_is_search_mode:

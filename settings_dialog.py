@@ -52,6 +52,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_identity_tab(), 'Identity')
         tabs.addTab(self._build_appearance_tab(), 'Appearance')
         tabs.addTab(self._build_shortcuts_tab(), 'Shortcuts')
+        tabs.addTab(self._build_help_tab(), 'Help')
         layout.addWidget(tabs)
 
         close_button = QPushButton('Close')
@@ -211,6 +212,43 @@ class SettingsDialog(QDialog):
         save_button.setStyleSheet(self.theme.primary_button_style)
         save_button.clicked.connect(self._on_save_shortcuts)
         layout.addWidget(save_button, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addStretch()
+        return tab
+
+    def _build_help_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(14)
+
+        tips = [
+            (
+                'Bible Dictionary lookups',
+                'In the results list, click and drag across a word to highlight it, then '
+                'right-click the highlighted word and choose "Look up" to see its entry '
+                'from Easton\'s Bible Dictionary (names, places, and terms — not every '
+                'word has an entry).',
+            ),
+            (
+                'Jump to a verse number',
+                'With the results list showing a chapter, type a verse number and press '
+                'Enter to jump straight to it — works even while the fullscreen display '
+                'is active.',
+            ),
+            (
+                'Service Plan',
+                'Save passages ahead of a service with "+ Add to Service" so you can jump '
+                'back to them later without searching again.',
+            ),
+        ]
+        for title, body in tips:
+            title_label = QLabel(title)
+            title_label.setStyleSheet(f'font-weight: 600; color: {self.theme.text};')
+            layout.addWidget(title_label)
+            body_label = QLabel(body)
+            body_label.setWordWrap(True)
+            body_label.setStyleSheet(f'color: {self.theme.text_muted};')
+            layout.addWidget(body_label)
+
         layout.addStretch()
         return tab
 

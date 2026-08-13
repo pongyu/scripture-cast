@@ -9,6 +9,7 @@ a = Analysis(
         ('bibles', 'bibles'),
         ('red_letter_kjv.json', '.'),
         ('supplied_words_kjv.json', '.'),
+        ('easton_dictionary.json', '.'),
         ('resources', 'resources'),
     ],
     hiddenimports=[],
