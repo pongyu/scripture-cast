@@ -225,8 +225,9 @@ class SettingsDialog(QDialog):
                 'Bible Dictionary lookups',
                 'In the results list, click and drag across a word to highlight it, then '
                 'right-click the highlighted word and choose "Look up" to see its entry '
-                'from Easton\'s Bible Dictionary (names, places, and terms — not every '
-                'word has an entry).',
+                'from Easton\'s Bible Dictionary, plus any matching Strong\'s Concordance '
+                'entries (Greek/Hebrew root word and meaning) — not every word has an '
+                'entry in either.',
             ),
             (
                 'Jump to a verse number',
@@ -250,6 +251,19 @@ class SettingsDialog(QDialog):
             layout.addWidget(body_label)
 
         layout.addStretch()
+
+        credits_title = QLabel('Credits')
+        credits_title.setStyleSheet(f'font-weight: 600; color: {self.theme.text};')
+        layout.addWidget(credits_title)
+        credits_label = QLabel(
+            'Easton\'s Bible Dictionary (1897, public domain), text from the Christian '
+            'Classics Ethereal Library. Strong\'s Concordance (James Strong, 1890, public '
+            'domain), data from the Open Scriptures project (CC BY-SA).'
+        )
+        credits_label.setWordWrap(True)
+        credits_label.setStyleSheet(f'color: {self.theme.text_muted}; font-size: 11px;')
+        layout.addWidget(credits_label)
+
         return tab
 
     @staticmethod

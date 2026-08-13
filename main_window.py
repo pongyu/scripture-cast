@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 import bible_dictionary
 import identity
 import red_letter
+import strongs_dictionary
 import supplied_words
 import theme
 from bible import Bible, Verse
@@ -1011,6 +1012,8 @@ class MainWindow(QMainWindow):
 
     def _show_dictionary_lookup(self, word: str):
         definition = bible_dictionary.lookup(word)
+        strongs_entries = strongs_dictionary.lookup(word)
+
         dialog = QDialog(self)
         dialog.setWindowTitle('Bible Dictionary')
         dialog.setMinimumWidth(440)
@@ -1019,29 +1022,27 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(theme.SPACE_6, theme.SPACE_6, theme.SPACE_6, theme.SPACE_6)
         layout.setSpacing(theme.SPACE_3)
 
-        kicker = QLabel('BIBLE DICTIONARY — EASTON\'S')
-        kicker.setStyleSheet(THEME.kicker_style)
-        layout.addWidget(kicker)
-
         headword = QLabel(html.escape(word))
         headword.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 20px; color: {THEME.text};')
         layout.addWidget(headword)
 
-        body = QLabel(html.escape(definition) if definition else f'No entry found for “{html.escape(word)}”.')
+        body_text = self._build_dictionary_lookup_html(word, definition, strongs_entries)
+        body = QLabel(body_text)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.setStyleSheet(
-            f'color: {THEME.text if definition else THEME.text_muted}; font-size: 13px; line-height: 150%; '
+            f'color: {THEME.text}; font-size: 13px; line-height: 150%; '
             f'selection-background-color: {THEME.text_selection_bg}; selection-color: {THEME.text_selection_text};'
         )
 
-        # Some Easton's entries (e.g. "heaven") run long — cap the dialog's growth
-        # with a scroll area rather than letting it stretch past the screen.
+        # Combined entries (Easton's plus several Strong's numbers) can run long —
+        # cap the dialog's growth with a scroll area rather than letting it stretch
+        # past the screen.
         scroll = QScrollArea()
         scroll.setWidget(body)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setMaximumHeight(360)
+        scroll.setMaximumHeight(420)
         scroll.setStyleSheet(THEME.scroll_area_style)
         layout.addWidget(scroll)
 
@@ -1053,6 +1054,30 @@ class MainWindow(QMainWindow):
 
         dialog.setStyleSheet(f'QDialog {{ background: {THEME.bg}; }}')
         dialog.exec()
+
+    def _build_dictionary_lookup_html(self, word: str, definition: str | None, strongs_entries: list[dict]) -> str:
+        kicker_style = f'color: {THEME.accent_700}; font-size: 11px; letter-spacing: 1px;'
+        sections = []
+
+        sections.append(f'<div style="{kicker_style}"><b>EASTON\'S BIBLE DICTIONARY</b></div>')
+        if definition:
+            sections.append(f'<div style="margin-top:4px;">{html.escape(definition)}</div>')
+        else:
+            sections.append(
+                f'<div style="margin-top:4px; color:{THEME.text_muted};">No entry found for “{html.escape(word)}”.</div>'
+            )
+
+        if strongs_entries:
+            sections.append(f'<div style="{kicker_style} margin-top:16px;"><b>STRONG\'S CONCORDANCE</b></div>')
+            for entry in strongs_entries:
+                language = 'Greek' if entry['number'][0] == 'G' else 'Hebrew'
+                heading = f"{entry['number']} · {entry['lemma']} ({entry['translit']}) — {language}"
+                sections.append(
+                    f'<div style="margin-top:10px;">{html.escape(heading)}</div>'
+                    f'<div>{html.escape(entry["def"])}</div>'
+                )
+
+        return ''.join(sections)
 
     def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
         if self._results_is_search_mode:
