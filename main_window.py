@@ -1029,6 +1029,7 @@ class MainWindow(QMainWindow):
         body_text = self._build_dictionary_lookup_html(word, definition, strongs_entries)
         body = QLabel(body_text)
         body.setWordWrap(True)
+        body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.setStyleSheet(
             f'color: {THEME.text}; font-size: 13px; line-height: 150%; '
