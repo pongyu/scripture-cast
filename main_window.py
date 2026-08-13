@@ -16,6 +16,7 @@ import red_letter
 import strongs_dictionary
 import supplied_words
 import theme
+import tsk_dictionary
 from bible import Bible, Verse
 from display_window import DisplayWindow, _apply_verse_html, available_screens
 from keybindings import KeyBindings
@@ -999,15 +1000,16 @@ class MainWindow(QMainWindow):
         # boundary) can pick up stray whitespace/punctuation at the edges — trim to
         # the actual word(s) a dictionary headword would match against.
         word = selected_text.strip(' \t\n.,;:!?"\'()[]')
-        if not word:
-            # No menu at all rather than a disabled placeholder item — right-clicking
-            # with nothing selected shouldn't produce a UI element with no obvious
-            # purpose. The hover tooltip (set once per label at creation) covers the
-            # "how do I use this" discovery instead.
-            return
+        verse: Verse = label._verse_row_item.data(Qt.ItemDataRole.UserRole)
+
         menu = QMenu(self)
-        lookup_action = menu.addAction(f'Look up “{word}” in Bible Dictionary')
-        lookup_action.triggered.connect(lambda: self._show_dictionary_lookup(word))
+        if word:
+            lookup_action = menu.addAction(f'Look up “{word}” in Bible Dictionary')
+            lookup_action.triggered.connect(lambda: self._show_dictionary_lookup(word))
+        # Cross-references apply to the whole verse, not a selection, so this is
+        # always offered — unlike the dictionary lookup above.
+        tsk_action = menu.addAction('Cross-References (TSK)')
+        tsk_action.triggered.connect(lambda: self._show_tsk_lookup(verse))
         menu.exec(label.mapToGlobal(pos))
 
     def _show_dictionary_lookup(self, word: str):
@@ -1079,6 +1081,126 @@ class MainWindow(QMainWindow):
                 )
 
         return ''.join(sections)
+
+    def _show_tsk_lookup(self, verse: Verse):
+        references = tsk_dictionary.lookup(verse.book, verse.chapter, verse.verse)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Cross-References')
+        dialog.setMinimumWidth(560)
+        dialog.setMaximumWidth(640)
+        outer_layout = QVBoxLayout(dialog)
+        outer_layout.setContentsMargins(theme.SPACE_6, theme.SPACE_6, theme.SPACE_6, theme.SPACE_6)
+        outer_layout.setSpacing(theme.SPACE_3)
+
+        heading = QLabel(html.escape(f'{verse.book} {verse.chapter}:{verse.verse}'))
+        heading.setStyleSheet(f'font-family: {theme.FONT_HEADING}; font-weight: 600; font-size: 20px; color: {THEME.text};')
+        outer_layout.addWidget(heading)
+
+        columns = QHBoxLayout()
+        columns.setSpacing(theme.SPACE_4)
+
+        body = QLabel(self._build_tsk_lookup_html(verse, references))
+        body.setWordWrap(True)
+        body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        body.setOpenExternalLinks(False)
+        body.linkActivated.connect(lambda href: self._on_tsk_reference_clicked(href, dialog))
+        body.linkHovered.connect(self._on_tsk_reference_hovered)
+        body.setStyleSheet(f'color: {THEME.text}; font-size: 13px; line-height: 150%;')
+
+        list_scroll = QScrollArea()
+        list_scroll.setWidget(body)
+        list_scroll.setWidgetResizable(True)
+        list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        list_scroll.setFixedWidth(160)
+        list_scroll.setMaximumHeight(280)
+        list_scroll.setStyleSheet(THEME.scroll_area_style)
+        columns.addWidget(list_scroll)
+
+        preview_frame = QFrame()
+        preview_frame.setObjectName('tskPreviewFrame')
+        preview_frame.setStyleSheet(
+            f'#tskPreviewFrame {{ background: {THEME.surface}; border: 1px solid {THEME.divider}; border-radius: 8px; }}'
+        )
+        preview_layout = QVBoxLayout(preview_frame)
+        preview_layout.setContentsMargins(16, 14, 16, 14)
+        preview_layout.setSpacing(6)
+
+        self._tsk_preview_kicker = QLabel('HOVER A REFERENCE TO PREVIEW IT')
+        self._tsk_preview_kicker.setWordWrap(True)
+        self._tsk_preview_kicker.setStyleSheet(
+            f'color: {THEME.accent_700}; font-size: 10px; font-weight: 600; letter-spacing: 1px;'
+        )
+        preview_layout.addWidget(self._tsk_preview_kicker)
+
+        self._tsk_preview_text = QLabel('')
+        self._tsk_preview_text.setWordWrap(True)
+        self._tsk_preview_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._tsk_preview_text.setStyleSheet(f'color: {THEME.text}; font-size: 13px; line-height: 150%;')
+        preview_layout.addWidget(self._tsk_preview_text)
+        preview_layout.addStretch()
+
+        columns.addWidget(preview_frame, stretch=1)
+        outer_layout.addLayout(columns)
+
+        close_button = QPushButton('Close')
+        close_button.setStyleSheet(THEME.primary_button_style)
+        close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_button.clicked.connect(dialog.accept)
+        outer_layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+        dialog.setStyleSheet(f'QDialog {{ background: {THEME.bg}; }}')
+        dialog.exec()
+
+    def _build_tsk_lookup_html(self, verse: Verse, references: list[str]) -> str:
+        if not references:
+            label = html.escape(f'{verse.book} {verse.chapter}:{verse.verse}')
+            return f'<div style="color:{THEME.text_muted};">No cross-references found for “{label}”.</div>'
+        sections = []
+        for ref in references:
+            escaped = html.escape(ref)
+            sections.append(
+                f'<div style="margin-top:6px;">'
+                f'<a href="{escaped}" style="color:{THEME.accent}; text-decoration:none;">{escaped}</a>'
+                f'</div>'
+            )
+        return ''.join(sections)
+
+    def _on_tsk_reference_clicked(self, href: str, dialog: QDialog):
+        dialog.accept()
+        ranges = self.bible.parse_reference(href)
+        if not ranges:
+            return
+        book, chapter, start_verse, end_verse = ranges[0]
+        self._results_sync_timer.stop()
+        verse_count = self.bible.verse_count(book, chapter)
+        verses = self.bible.get_verses(book, chapter, 1, verse_count) if verse_count else []
+        self.book_combo.blockSignals(True)
+        self.book_combo.setCurrentText(book)
+        self.book_combo.blockSignals(False)
+        self.chapter_spin.blockSignals(True)
+        self.chapter_spin.setValue(chapter)
+        self.chapter_spin.blockSignals(False)
+        self._populate_results(
+            verses, select_ranges=[(start_verse, end_verse)], title=f'{book} {chapter}', is_search_mode=False,
+        )
+
+    def _on_tsk_reference_hovered(self, href: str):
+        if not href:
+            self._tsk_preview_kicker.setText('HOVER A REFERENCE TO PREVIEW IT')
+            self._tsk_preview_text.setText('')
+            return
+        ranges = self.bible.parse_reference(href)
+        if not ranges:
+            return
+        book, chapter, start_verse, end_verse = ranges[0]
+        verses = self.bible.get_verses(book, chapter, start_verse, end_verse)
+        if not verses:
+            return
+        preview = ' '.join(v.text.strip() for v in verses)
+        self._tsk_preview_kicker.setText(html.escape(href).upper())
+        self._tsk_preview_text.setText(html.escape(preview))
 
     def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
         if self._results_is_search_mode:

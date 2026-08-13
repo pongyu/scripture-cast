@@ -230,6 +230,12 @@ class SettingsDialog(QDialog):
                 'entry in either.',
             ),
             (
+                'Cross-references (TSK)',
+                'Right-click any verse in the results list — no need to select a word — '
+                'and choose "Cross-References (TSK)" to see related verses. Click one to '
+                'jump straight to it.',
+            ),
+            (
                 'Jump to a verse number',
                 'With the results list showing a chapter, type a verse number and press '
                 'Enter to jump straight to it — works even while the fullscreen display '
@@ -258,7 +264,8 @@ class SettingsDialog(QDialog):
         credits_label = QLabel(
             'Easton\'s Bible Dictionary (1897, public domain), text from the Christian '
             'Classics Ethereal Library. Strong\'s Concordance (James Strong, 1890, public '
-            'domain), data from the Open Scriptures project (CC BY-SA).'
+            'domain), data from the Open Scriptures project (CC BY-SA). Cross-references '
+            '(Treasury of Scripture Knowledge), data from openbible.info (CC BY).'
         )
         credits_label.setWordWrap(True)
         credits_label.setStyleSheet(f'color: {self.theme.text_muted}; font-size: 11px;')
