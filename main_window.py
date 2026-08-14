@@ -1102,7 +1102,11 @@ class MainWindow(QMainWindow):
 
         body = QLabel(self._build_tsk_lookup_html(verse, references))
         body.setWordWrap(True)
-        body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        body.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        # Fixed vertical policy (not Preferred) so the label only claims the height its
+        # text needs — otherwise QScrollArea's resizable widget stretches it to fill the
+        # viewport and vertically centers a short reference list, leaving a gap above it.
+        body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         body.setOpenExternalLinks(False)
         body.linkActivated.connect(lambda href: self._on_tsk_reference_clicked(href, dialog))
@@ -1120,6 +1124,7 @@ class MainWindow(QMainWindow):
 
         preview_frame = QFrame()
         preview_frame.setObjectName('tskPreviewFrame')
+        preview_frame.setFixedHeight(280)
         preview_frame.setStyleSheet(
             f'#tskPreviewFrame {{ background: {THEME.surface}; border: 1px solid {THEME.divider}; border-radius: 8px; }}'
         )
@@ -1134,12 +1139,26 @@ class MainWindow(QMainWindow):
         )
         preview_layout.addWidget(self._tsk_preview_kicker)
 
+        # Longer previews (multi-verse ranges, or just a long single verse) can exceed
+        # the frame's fixed height — a scroll area lets the rest be reached by scrolling
+        # instead of being silently clipped off the bottom with no indication more text
+        # follows.
         self._tsk_preview_text = QLabel('')
         self._tsk_preview_text.setWordWrap(True)
-        self._tsk_preview_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._tsk_preview_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        # Fixed vertical policy (not Expanding) so the label only claims the height its
+        # wrapped text needs — otherwise QScrollArea's resizable widget stretches to fill
+        # the viewport and vertically centers short text, leaving a gap above it.
+        self._tsk_preview_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._tsk_preview_text.setStyleSheet(f'color: {THEME.text}; font-size: 13px; line-height: 150%;')
-        preview_layout.addWidget(self._tsk_preview_text)
-        preview_layout.addStretch()
+
+        preview_scroll = QScrollArea()
+        preview_scroll.setWidget(self._tsk_preview_text)
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        preview_scroll.setStyleSheet(f'background: transparent; {THEME.scroll_area_style}')
+        preview_scroll.viewport().setStyleSheet('background: transparent;')
+        preview_layout.addWidget(preview_scroll)
 
         columns.addWidget(preview_frame, stretch=1)
         outer_layout.addLayout(columns)
