@@ -1169,6 +1169,11 @@ class MainWindow(QMainWindow):
 
     def _on_tsk_reference_clicked(self, href: str, dialog: QDialog):
         dialog.accept()
+        # TSK reference text is English-only (e.g. "Deuteronomy 32:4"), so cross-reference
+        # navigation always resolves and displays against the KJV, regardless of the
+        # active translation — matches the hover preview, and avoids either failing to
+        # parse the reference or showing the wrong book against a non-English bible.
+        self._set_version(self._english_version_name())
         ranges = self.bible.parse_reference(href)
         if not ranges:
             return
@@ -1191,16 +1196,30 @@ class MainWindow(QMainWindow):
             self._tsk_preview_kicker.setText('HOVER A REFERENCE TO PREVIEW IT')
             self._tsk_preview_text.setText('')
             return
-        ranges = self.bible.parse_reference(href)
+        # TSK cross-reference book names/text are English-only, so the preview always
+        # resolves against the KJV regardless of the active translation — otherwise
+        # switching to e.g. Tagalog either fails to parse the reference (different book
+        # names) or renders garbled/escaped text from a non-English bible.
+        preview_bible = self._english_bible()
+        ranges = preview_bible.parse_reference(href)
         if not ranges:
             return
         book, chapter, start_verse, end_verse = ranges[0]
-        verses = self.bible.get_verses(book, chapter, start_verse, end_verse)
+        verses = preview_bible.get_verses(book, chapter, start_verse, end_verse)
         if not verses:
             return
         preview = ' '.join(v.text.strip() for v in verses)
         self._tsk_preview_kicker.setText(html.escape(href).upper())
         self._tsk_preview_text.setText(html.escape(preview))
+
+    def _english_version_name(self) -> str:
+        for name in self.bibles:
+            if _is_kjv(name):
+                return name
+        return self.version_name
+
+    def _english_bible(self) -> Bible:
+        return self.bibles[self._english_version_name()]
 
     def _format_verse_html(self, v: Verse, highlight_words: list[str] | None) -> str:
         if self._results_is_search_mode:
