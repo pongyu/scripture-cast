@@ -19,7 +19,7 @@ from identity import Identity, IdentityConfig, store_logo
 from keybindings import ACTIONS, KeyBindings
 import red_letter
 import supplied_words
-from theme import Theme, ThemeConfig
+from theme import THEME_PRESETS, Theme, ThemeConfig
 
 # Slider goes from 0 (Small) to 100 (Large); these map to the underlying text_size_percent range.
 MIN_TEXT_SIZE_PERCENT = 3.0
@@ -164,6 +164,25 @@ class SettingsDialog(QDialog):
     def _build_appearance_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+
+        layout.addWidget(QLabel('Theme presets:'))
+        preset_row = QHBoxLayout()
+        for name in THEME_PRESETS:
+            preset_box = QVBoxLayout()
+            swatch = QPushButton()
+            swatch.setFixedSize(48, 24)
+            swatch.setToolTip(name)
+            colors = THEME_PRESETS[name]
+            swatch.setStyleSheet(
+                f'background-color: {colors.bg}; border: 1px solid #888;'
+                f'border-top: 3px solid {colors.accent};'
+            )
+            swatch.clicked.connect(lambda _checked=False, n=name: self._on_pick_preset(n))
+            preset_box.addWidget(swatch)
+            preset_box.addWidget(QLabel(name))
+            preset_row.addLayout(preset_box)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
 
         layout.addWidget(QLabel('Control panel colors:'))
         appearance_row = QHBoxLayout()
@@ -341,6 +360,13 @@ class SettingsDialog(QDialog):
         if not color.isValid():
             return
         new_config = replace(self.theme.config, **{field: color.name()})
+        self.theme.apply(new_config)
+        new_config.save()
+        self._update_swatch_buttons()
+        self._update_preview()
+
+    def _on_pick_preset(self, name: str):
+        new_config = replace(THEME_PRESETS[name])
         self.theme.apply(new_config)
         new_config.save()
         self._update_swatch_buttons()

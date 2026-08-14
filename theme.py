@@ -154,6 +154,30 @@ class ThemeConfig:
         CONFIG_PATH.write_text(json.dumps(asdict(self), indent=2))
 
 
+# Built-in color presets, offered in the Appearance tab alongside manual swatch picking.
+# Each entry sets every ThemeConfig field, so applying one fully replaces the palette
+# (control panel + display screen) in a single click.
+THEME_PRESETS: dict[str, ThemeConfig] = {
+    'Default': ThemeConfig(),
+    'Dark': ThemeConfig(
+        bg='#1e1f22', surface='#2a2b2f', text='#e8e9eb', accent='#5b9bd5',
+        display_bg='#000000', display_text='#ffffff',
+    ),
+    'Slate': ThemeConfig(
+        bg='#eceff3', surface='#dfe3e9', text='#22282f', accent='#46647a',
+        display_bg='#0c1116', display_text='#ffffff',
+    ),
+    'Warm': ThemeConfig(
+        bg='#f5efe6', surface='#eae1d2', text='#2e2822', accent='#b8763e',
+        display_bg='#1a120a', display_text='#fbf3e6',
+    ),
+    'Forest': ThemeConfig(
+        bg='#eef2ec', surface='#dfe7db', text='#1f2a20', accent='#4a7856',
+        display_bg='#0c130d', display_text='#eef2ec',
+    ),
+}
+
+
 def _mix(color: str, target: str, amount: float) -> str:
     """Blends `color` toward `target` by `amount` (0-1); used to derive tints/shades
     (e.g. lighter/darker accent variants) from a single user-picked base color."""
