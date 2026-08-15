@@ -1075,9 +1075,15 @@ class MainWindow(QMainWindow):
             for entry in strongs_entries:
                 language = 'Greek' if entry['number'][0] == 'G' else 'Hebrew'
                 heading = f"{entry['number']} · {entry['lemma']} ({entry['translit']}) — {language}"
+                # Strong's source data wraps some definitions in a literal {…} pair
+                # (a cross-reference-style convention) — strip it for display since
+                # it renders as stray punctuation rather than meaningful text here.
+                definition_text = entry['def'].strip()
+                if definition_text.startswith('{') and definition_text.endswith('}'):
+                    definition_text = definition_text[1:-1].strip()
                 sections.append(
                     f'<div style="margin-top:10px;">{html.escape(heading)}</div>'
-                    f'<div>{html.escape(entry["def"])}</div>'
+                    f'<div>{html.escape(definition_text)}</div>'
                 )
 
         return ''.join(sections)
