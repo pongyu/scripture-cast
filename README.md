@@ -61,7 +61,21 @@ pyinstaller scripture_cast.spec
 
 This produces `dist\Scripture Cast\Scripture Cast.exe` plus a support folder —
 no installer, no Python required on the target machine. Copy or zip the whole
-`Scripture Cast` folder to share it.
+`Scripture Cast` folder to share it; copying the .exe alone will fail on
+another machine with a "Failed to load Python DLL" error since it depends on
+the `_internal` folder next to it. Starts up fast since nothing needs to be
+unpacked first.
+
+For a single-file .exe instead (simpler to carry on a flash drive, but a few
+seconds slower to launch each time since it self-extracts to a temp folder
+first):
+
+```
+pyinstaller scripture_cast_onefile.spec
+```
+
+This produces `dist\Scripture Cast.exe` with everything embedded — just copy
+that one file.
 
 ## Default keyboard shortcuts
 
