@@ -17,13 +17,14 @@ import strongs_dictionary
 import supplied_words
 import theme
 import tsk_dictionary
+import version
 from bible import Bible, Verse
 from display_window import DisplayWindow, _apply_verse_html, available_screens
 from keybindings import KeyBindings
 from service import ServiceItem, ServiceList
 from settings_dialog import SettingsDialog
 
-DEFAULT_LOGO_PATH = theme.APP_DIR / 'resources' / 'vcbc logo.png'
+DEFAULT_LOGO_PATH = theme.APP_DIR / 'resources' / 'icon.png'
 THEME = theme.instance
 IDENTITY = identity.instance
 
@@ -99,7 +100,7 @@ class MainWindow(QMainWindow):
         self._cards: list[QFrame] = []
         self._kicker_labels: list[QLabel] = []
 
-        self.setWindowTitle('Scripture Cast')
+        self.setWindowTitle('Scripture Cast' if version.__version__ == 'dev' else f'Scripture Cast v{version.__version__}')
 
         central = QWidget()
         self.setCentralWidget(central)

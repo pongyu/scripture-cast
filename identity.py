@@ -14,13 +14,13 @@ APP_DATA_DIR = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter'
 CONFIG_PATH = APP_DATA_DIR / 'identity_config.json'
 LOGO_STORAGE_PATH = APP_DATA_DIR / 'logo.png'
 
-DEFAULT_CHURCH_NAME = 'Valenzuela City Baptist Church'
+DEFAULT_CHURCH_NAME = 'Your Church Name'
 
 
 @dataclass
 class IdentityConfig:
     church_name: str = DEFAULT_CHURCH_NAME
-    # Empty string means "use the bundled default logo" (resources/vcbc logo.png).
+    # Empty string means "use the bundled default logo" (resources/icon.png).
     logo_path: str = ''
 
     @classmethod

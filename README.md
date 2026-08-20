@@ -77,6 +77,14 @@ pyinstaller scripture_cast_onefile.spec
 This produces `dist\Scripture Cast.exe` with everything embedded — just copy
 that one file.
 
+### Automated releases
+
+Every push to `master` triggers [.github/workflows/release.yml](.github/workflows/release.yml),
+which auto-increments the patch version (`v1.0.0`, `v1.0.1`, ...), builds the
+onefile exe, tags the commit, and publishes it as a GitHub Release with the
+`.exe` attached — grab the latest build from the repo's Releases page instead
+of building locally.
+
 ## Default keyboard shortcuts
 
 All configurable from **Settings → Shortcuts**.
@@ -118,4 +126,5 @@ Settings persist to `%APPDATA%\bible-presenter\`:
 - `theme.py` — control panel color theme, derived shades, Lucide icon rendering
 - `identity.py`, `keybindings.py`, `config.py`, `service.py` — small persisted-config dataclasses
 - `red_letter.py`, `supplied_words.py` — KJV red-letter and italics data
-- `resources/` — fonts, icons, app icon, default church logo
+- `version.py` — app version string, stamped by CI at build time (source runs show "dev")
+- `resources/` — fonts, icons, app icon (also used as the default identity logo placeholder — no church branding is bundled; set your own name/logo in Settings)

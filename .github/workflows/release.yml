@@ -1,0 +1,59 @@
+name: Build and release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        shell: bash
+        run: |
+          latest=$(git tag --list 'v*' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
+          if [ -z "$latest" ]; then
+            next="1.0.0"
+          else
+            patch=$(echo "$latest" | cut -d. -f3)
+            major_minor=$(echo "$latest" | cut -d. -f1,2)
+            next="${major_minor}.$((patch + 1))"
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install PySide6 pyinstaller
+
+      - name: Stamp version
+        shell: bash
+        run: echo "__version__ = '${{ steps.version.outputs.version }}'" > version.py
+
+      - name: Build exe
+        run: pyinstaller scripture_cast_onefile.spec
+
+      - name: Tag release commit
+        run: |
+          git tag v${{ steps.version.outputs.version }}
+          git push origin v${{ steps.version.outputs.version }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: "dist/Scripture Cast.exe"
+          generate_release_notes: true
