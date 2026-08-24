@@ -205,6 +205,18 @@ class MainWindow(QMainWindow):
         # in the search box or chapter spinner.
         if not isinstance(QApplication.focusWidget(), (QLineEdit, QSpinBox)) and self._handle_verse_jump_key(event):
             return True
+        # Pagination must also be global: on a real extended-display setup the display
+        # window sits on the second monitor and essentially never has OS keyboard focus,
+        # so relying on DisplayWindow.keyPressEvent alone silently drops arrow/space/page
+        # key presses whenever the operator is working from the control panel — which is
+        # the normal case in church use, not an edge case.
+        if not isinstance(QApplication.focusWidget(), (QLineEdit, QSpinBox)):
+            if event.key() in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown, Qt.Key.Key_Space):
+                self.display.next_page()
+                return True
+            if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
+                self.display.previous_page()
+                return True
         pressed = QKeySequence(event.keyCombination())
         for action, handler in self._action_handlers().items():
             sequence = getattr(self.keybindings, action)

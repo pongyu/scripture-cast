@@ -580,9 +580,12 @@ class DisplayWindow(QWidget):
 
     def keyPressEvent(self, event):
         # Configured action shortcuts (show_display, send_to_display, show_desktop, etc.)
-        # are handled centrally by an application-wide event filter in main_window.py, so
-        # they work regardless of whether this window or the main window has OS focus.
-        # Only pagination/escape — not user-configurable — are handled locally here.
+        # and pagination are handled centrally by an application-wide event filter in
+        # main_window.py, so they work regardless of whether this window or the main
+        # window has OS focus (e.g. a real extended-display setup, where this window
+        # rarely has focus at all). The event filter intercepts those keys before Qt
+        # delivers them here, so the pagination branches below only run as a fallback
+        # for whatever it doesn't handle. Escape is not user-configurable and stays local.
         if event.key() == Qt.Key.Key_Escape:
             self.showNormal()
             self.hide()
