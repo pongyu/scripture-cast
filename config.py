@@ -1,9 +1,10 @@
 """Persisted display settings: font sizes and line spacing, as a percentage of screen height."""
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
-CONFIG_PATH = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'config.json'
+from paths import app_data_dir
+
+CONFIG_PATH = app_data_dir() / 'bible-presenter' / 'config.json'
 
 
 @dataclass

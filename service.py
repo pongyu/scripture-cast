@@ -3,9 +3,9 @@ a service, so jumping back to the opening passage (or ahead to a later one) afte
 preacher references a different book doesn't require re-searching mid-service."""
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from paths import app_data_dir
 
-CONFIG_PATH = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'service.json'
+CONFIG_PATH = app_data_dir() / 'bible-presenter' / 'service.json'
 
 
 @dataclass

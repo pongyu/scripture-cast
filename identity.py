@@ -10,7 +10,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-APP_DATA_DIR = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter'
+from paths import app_data_dir
+
+APP_DATA_DIR = app_data_dir() / 'bible-presenter'
 CONFIG_PATH = APP_DATA_DIR / 'identity_config.json'
 LOGO_STORAGE_PATH = APP_DATA_DIR / 'logo.png'
 

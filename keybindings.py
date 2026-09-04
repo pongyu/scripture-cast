@@ -1,9 +1,9 @@
 """Persisted keyboard shortcuts for the control panel's most common actions."""
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from paths import app_data_dir
 
-CONFIG_PATH = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'keybindings.json'
+CONFIG_PATH = app_data_dir() / 'bible-presenter' / 'keybindings.json'
 
 # (action name, default shortcut, human-readable label)
 ACTIONS = [

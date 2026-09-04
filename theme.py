@@ -15,12 +15,14 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
 
+from paths import app_data_dir
+
 # When frozen by PyInstaller, bundled data files are unpacked to sys._MEIPASS at
 # runtime; when running from source, they live next to this script (mirrors app.py).
 APP_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
 _FONTS_DIR = APP_DIR / 'resources' / 'fonts'
 
-CONFIG_PATH = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'theme_config.json'
+CONFIG_PATH = app_data_dir() / 'bible-presenter' / 'theme_config.json'
 
 FONT_HEADING = '"Barlow Condensed", "Segoe UI Semibold", "Segoe UI", sans-serif'
 FONT_BODY = '"Barlow", "Segoe UI", sans-serif'
@@ -50,7 +52,7 @@ SPACE_3 = 10
 SPACE_4 = 14
 SPACE_6 = 20
 
-_ICON_CACHE_DIR = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'icons'
+_ICON_CACHE_DIR = app_data_dir() / 'bible-presenter' / 'icons'
 
 
 def _chevron_file_url(color: str, direction: str = 'down') -> str:

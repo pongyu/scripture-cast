@@ -44,15 +44,19 @@ python app.py
 ```
 
 By default it loads every `.sqlite` Bible file found in `bibles/`, falling
-back to `%APPDATA%\openlp\data\bibles\` if that folder is empty (so it can
-reuse Bibles already downloaded for OpenLP). You can also pass specific files
+back to OpenLP's own Bibles folder if that folder is empty
+(`%APPDATA%\openlp\data\bibles\` on Windows,
+`~/Library/Application Support/openlp/data/bibles/` on macOS) so it can reuse
+Bibles already downloaded for OpenLP. You can also pass specific files
 directly:
 
 ```
 python app.py path\to\some-bible.sqlite
 ```
 
-## Building a standalone .exe
+## Building a standalone app
+
+### Windows
 
 ```
 pip install pyinstaller
@@ -77,13 +81,28 @@ pyinstaller scripture_cast_onefile.spec
 This produces `dist\Scripture Cast.exe` with everything embedded — just copy
 that one file.
 
+### macOS
+
+```
+pip install pyinstaller
+pyinstaller scripture_cast_onefile.spec
+```
+
+This produces `dist/Scripture Cast.app`. Zip it to share it. The app is
+**unsigned** (no Apple Developer account is attached to this project), so
+Gatekeeper will refuse to open it with "Apple cannot check it for malicious
+software." To run it anyway: right-click the app → **Open** → **Open** in the
+confirmation dialog (only needed once), or run
+`xattr -cr "Scripture Cast.app"` in Terminal first. Built and tested on
+Apple Silicon (arm64); it has not been tested on Intel Macs.
+
 ### Automated releases
 
 Every push to `master` triggers [.github/workflows/release.yml](.github/workflows/release.yml),
 which auto-increments the patch version (`v1.0.0`, `v1.0.1`, ...), builds the
-onefile exe, tags the commit, and publishes it as a GitHub Release with the
-`.exe` attached — grab the latest build from the repo's Releases page instead
-of building locally.
+onefile Windows .exe and the macOS .app (zipped), tags the commit, and
+publishes both as a GitHub Release — grab the latest build from the repo's
+Releases page instead of building locally.
 
 ## Default keyboard shortcuts
 
@@ -105,7 +124,8 @@ followed by `Enter` jumps to it directly.
 
 ## Configuration files
 
-Settings persist to `%APPDATA%\bible-presenter\`:
+Settings persist to `%APPDATA%\bible-presenter\` on Windows, or
+`~/Library/Application Support/bible-presenter/` on macOS:
 
 | File                  | Contents                                   |
 | ---------------------- | ------------------------------------------- |

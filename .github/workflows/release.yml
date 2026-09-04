@@ -8,8 +8,10 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,7 +19,6 @@ jobs:
 
       - name: Compute next version
         id: version
-        shell: bash
         run: |
           latest=$(git tag --list 'v*' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
           if [ -z "$latest" ]; then
@@ -28,6 +29,19 @@ jobs:
             next="${major_minor}.$((patch + 1))"
           fi
           echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Tag release commit
+        run: |
+          git tag v${{ steps.version.outputs.version }}
+          git push origin v${{ steps.version.outputs.version }}
+
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,20 +54,76 @@ jobs:
 
       - name: Stamp version
         shell: bash
-        run: echo "__version__ = '${{ steps.version.outputs.version }}'" > version.py
+        run: echo "__version__ = '${{ needs.version.outputs.version }}'" > version.py
 
       - name: Build exe
         run: pyinstaller scripture_cast_onefile.spec
 
-      - name: Tag release commit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: "dist/Scripture Cast.exe"
+
+  build-macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          git tag v${{ steps.version.outputs.version }}
-          git push origin v${{ steps.version.outputs.version }}
+          pip install PySide6 pyinstaller
+
+      - name: Stamp version
+        run: echo "__version__ = '${{ needs.version.outputs.version }}'" > version.py
+
+      - name: Generate .icns from icon.png
+        run: |
+          mkdir icon.iconset
+          sips -z 16 16     resources/icon.png --out icon.iconset/icon_16x16.png
+          sips -z 32 32     resources/icon.png --out icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     resources/icon.png --out icon.iconset/icon_32x32.png
+          sips -z 64 64     resources/icon.png --out icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   resources/icon.png --out icon.iconset/icon_128x128.png
+          sips -z 256 256   resources/icon.png --out icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   resources/icon.png --out icon.iconset/icon_256x256.png
+          sips -z 512 512   resources/icon.png --out icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   resources/icon.png --out icon.iconset/icon_512x512.png
+          cp resources/icon.png icon.iconset/icon_512x512@2x.png
+          iconutil -c icns icon.iconset -o resources/icon.icns
+
+      - name: Build app
+        run: pyinstaller scripture_cast_onefile.spec
+
+      - name: Zip app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/Scripture Cast.app" "dist/Scripture Cast-macOS.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: "dist/Scripture Cast-macOS.zip"
+
+  release:
+    needs: [version, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          files: "dist/Scripture Cast.exe"
+          tag_name: v${{ needs.version.outputs.version }}
+          name: v${{ needs.version.outputs.version }}
+          files: |
+            dist/windows-build/Scripture Cast.exe
+            dist/macos-build/Scripture Cast-macOS.zip
           generate_release_notes: true

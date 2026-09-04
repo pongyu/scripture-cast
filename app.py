@@ -9,14 +9,15 @@ from PySide6.QtWidgets import QApplication
 import theme
 from bible import Bible
 from main_window import MainWindow
+from paths import app_data_dir
 
 # When frozen by PyInstaller, bundled data files are unpacked to sys._MEIPASS at
 # runtime; when running from source, they live next to this script.
 APP_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
 BUNDLED_BIBLES_DIR = APP_DIR / 'bibles'
-OPENLP_BIBLES_DIR = Path.home() / 'AppData' / 'Roaming' / 'openlp' / 'data' / 'bibles'
-ICON_PATH = APP_DIR / 'resources' / 'icon.ico'
-CRASH_LOG_PATH = Path.home() / 'AppData' / 'Roaming' / 'bible-presenter' / 'crash.log'
+OPENLP_BIBLES_DIR = app_data_dir() / 'openlp' / 'data' / 'bibles'
+ICON_PATH = APP_DIR / 'resources' / ('icon.ico' if sys.platform == 'win32' else 'icon.png')
+CRASH_LOG_PATH = app_data_dir() / 'bible-presenter' / 'crash.log'
 
 
 def _log_uncaught_exception(exc_type, exc_value, exc_tb):
