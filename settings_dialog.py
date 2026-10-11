@@ -3,8 +3,8 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QScreen
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QScreen
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit,
     QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget,
@@ -19,6 +19,7 @@ from identity import Identity, IdentityConfig, store_logo
 from keybindings import ACTIONS, KeyBindings
 import red_letter
 import supplied_words
+import updater
 from theme import THEME_PRESETS, Theme, ThemeConfig
 
 # Slider goes from 0 (Small) to 100 (Large); these map to the underlying text_size_percent range.
@@ -52,7 +53,8 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_identity_tab(), 'Identity')
         tabs.addTab(self._build_appearance_tab(), 'Appearance')
         tabs.addTab(self._build_shortcuts_tab(), 'Shortcuts')
-        tabs.addTab(self._build_help_tab(), 'Help')
+        self._help_page = self._build_help_tab()
+        tabs.addTab(self._help_page, 'Help')
         layout.addWidget(tabs)
 
         close_button = QPushButton('Close')
@@ -62,6 +64,10 @@ class SettingsDialog(QDialog):
 
         self._update_swatch_buttons()
         self._update_preview()
+
+        updater.instance.state_changed.connect(self._refresh_update_status)
+        self.finished.connect(lambda _=0: updater.instance.state_changed.disconnect(self._refresh_update_status))
+        self._refresh_update_status()
 
     def _build_display_tab(self) -> QWidget:
         tab = QWidget()
@@ -277,6 +283,34 @@ class SettingsDialog(QDialog):
 
         layout.addStretch()
 
+        updates_title = QLabel('Updates')
+        updates_title.setStyleSheet(f'font-weight: 600; color: {self.theme.text};')
+        layout.addWidget(updates_title)
+
+        update_row = QHBoxLayout()
+        self.check_updates_button = QPushButton('Check for updates')
+        self.check_updates_button.setStyleSheet(self.theme.button_style)
+        self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check_updates_button.clicked.connect(lambda: updater.instance.check(manual=True))
+        update_row.addWidget(self.check_updates_button)
+        self.update_status_label = QLabel()
+        self.update_status_label.setWordWrap(True)
+        update_row.addWidget(self.update_status_label, stretch=1)
+        self.update_download_button = QPushButton('Download')
+        self.update_download_button.setStyleSheet(self.theme.primary_button_style)
+        self.update_download_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_download_button.clicked.connect(self._on_update_download_clicked)
+        update_row.addWidget(self.update_download_button)
+        layout.addLayout(update_row)
+
+        self.update_startup_checkbox = QCheckBox('Check for updates when Scripture Cast starts')
+        self.update_startup_checkbox.setStyleSheet(self.theme.checkbox_style)
+        self.update_startup_checkbox.setChecked(updater.instance.config.check_on_startup)
+        self.update_startup_checkbox.toggled.connect(updater.instance.set_check_on_startup)
+        layout.addWidget(self.update_startup_checkbox)
+
+        layout.addSpacing(10)
+
         credits_title = QLabel('Credits')
         credits_title.setStyleSheet(f'font-weight: 600; color: {self.theme.text};')
         layout.addWidget(credits_title)
@@ -291,6 +325,39 @@ class SettingsDialog(QDialog):
         layout.addWidget(credits_label)
 
         return tab
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # The Help tab is mostly word-wrapped text, whose height depends on the width it
+        # ends up with — a size hint computed beforehand under-reports it and clips the
+        # last lines. Grow the dialog (never shrink it) once it has a real width.
+        if not getattr(self, '_help_fitted', False):
+            self._help_fitted = True
+            page = self._help_page
+            short = page.layout().minimumHeightForWidth(page.width()) - page.height()
+            if short > 0:
+                self.resize(self.width(), self.height() + short)
+
+    def _refresh_update_status(self):
+        checker = updater.instance
+        checking = checker.state == updater.CHECKING
+        self.check_updates_button.setEnabled(not checking and not checker.is_dev)
+        self.check_updates_button.setText('Checking…' if checking else 'Check for updates')
+        self.update_download_button.setVisible(checker.state == updater.AVAILABLE and checker.latest is not None)
+
+        text = checker.status_text()
+        if checker.state == updater.IDLE:
+            text = f'You have v{checker.current_version}.'
+        # Errors only read as errors when the person asked for the check; a failed
+        # silent startup check never reaches the UI, but a later manual one should.
+        color = self.theme.accent if checker.state == updater.AVAILABLE else self.theme.text_muted
+        weight = '600' if checker.state == updater.AVAILABLE else '400'
+        self.update_status_label.setStyleSheet(f'color: {color}; font-weight: {weight};')
+        self.update_status_label.setText(text)
+
+    def _on_update_download_clicked(self):
+        if updater.instance.latest:
+            QDesktopServices.openUrl(QUrl(updater.instance.latest.download_url))
 
     @staticmethod
     def _percent_to_slider(percent: float) -> int:

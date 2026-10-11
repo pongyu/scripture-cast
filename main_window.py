@@ -3,8 +3,8 @@ import html
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget,
@@ -17,6 +17,7 @@ import strongs_dictionary
 import supplied_words
 import theme
 import tsk_dictionary
+import updater
 import version
 from bible import Bible, Verse
 from display_window import DisplayWindow, _apply_verse_html, available_screens
@@ -27,6 +28,7 @@ from settings_dialog import SettingsDialog
 DEFAULT_LOGO_PATH = theme.APP_DIR / 'resources' / 'icon.png'
 THEME = theme.instance
 IDENTITY = identity.instance
+UPDATER = updater.instance
 
 
 def _circular_pixmap(path: Path, size: int) -> QPixmap:
@@ -109,6 +111,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
 
         outer.addWidget(self._build_identity_strip())
+        outer.addWidget(self._build_update_banner())
 
         body = QWidget()
         body_layout = QHBoxLayout(body)
@@ -141,6 +144,11 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         THEME.changed.connect(self._apply_theme)
         IDENTITY.changed.connect(self._update_identity)
+        UPDATER.state_changed.connect(self._on_update_state_changed)
+        # A few seconds after launch (not during startup, and never as a modal dialog): a
+        # newer release only ever shows up as the slim banner under the title strip.
+        if UPDATER.config.check_on_startup and not UPDATER.is_dev:
+            QTimer.singleShot(3000, lambda: UPDATER.check(manual=False))
 
         # Must run after all widgets/layouts exist: the toolbar row's buttons need more
         # than 720px, so Qt grows the window past any earlier resize() to fit its real
@@ -696,6 +704,61 @@ class MainWindow(QMainWindow):
         row.addWidget(self.settings_button)
 
         return strip
+
+    def _build_update_banner(self) -> QWidget:
+        """Slim, dismissible "new version available" strip. Hidden until an update check
+        finds a newer release; deliberately non-modal so it can't interrupt a live service."""
+        self._update_banner_dismissed_version: str | None = None
+        banner = QFrame()
+        self.update_banner = banner
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(theme.SPACE_4, theme.SPACE_2, theme.SPACE_3, theme.SPACE_2)
+        row.setSpacing(theme.SPACE_3)
+
+        self.update_banner_label = QLabel()
+        row.addWidget(self.update_banner_label)
+        row.addStretch()
+
+        self.update_download_button = QPushButton('Download')
+        self.update_download_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_download_button.clicked.connect(self._on_update_download_clicked)
+        row.addWidget(self.update_download_button)
+
+        self.update_dismiss_button = QToolButton()
+        self.update_dismiss_button.setText('✕')
+        self.update_dismiss_button.setToolTip('Hide until next launch')
+        self.update_dismiss_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_dismiss_button.clicked.connect(self._on_update_dismissed)
+        row.addWidget(self.update_dismiss_button)
+
+        banner.hide()
+        return banner
+
+    def _on_update_state_changed(self):
+        if UPDATER.state == updater.CHECKING:
+            if UPDATER.manual:
+                # Someone explicitly asked to check, so show the result even if they hid it earlier.
+                self._update_banner_dismissed_version = None
+            return
+        latest = UPDATER.latest
+        show = (
+            UPDATER.state == updater.AVAILABLE and latest is not None
+            and latest.version != self._update_banner_dismissed_version
+        )
+        if show:
+            self.update_banner_label.setText(
+                f'Scripture Cast v{latest.version} is available — you have v{UPDATER.current_version}.'
+            )
+        self.update_banner.setVisible(show)
+
+    def _on_update_download_clicked(self):
+        if UPDATER.latest:
+            QDesktopServices.openUrl(QUrl(UPDATER.latest.download_url))
+
+    def _on_update_dismissed(self):
+        if UPDATER.latest:
+            self._update_banner_dismissed_version = UPDATER.latest.version
+        self.update_banner.hide()
 
     def _on_version_combo_changed(self, version_name: str):
         self._set_version(version_name)
@@ -1327,6 +1390,14 @@ class MainWindow(QMainWindow):
         self.screen_combo.setStyleSheet(THEME.combo_style)
         self.show_display_button.setStyleSheet(THEME.primary_button_style)
         self.settings_button.setStyleSheet(THEME.ghost_button_style)
+
+        self.update_banner.setStyleSheet(f'QFrame {{ background: {THEME.accent_100}; border-bottom: 1px solid {THEME.divider}; }}')
+        self.update_banner_label.setStyleSheet(f'background: transparent; border: none; color: {THEME.accent_800}; font-size: 13px;')
+        self.update_download_button.setStyleSheet(THEME.primary_button_style)
+        self.update_dismiss_button.setStyleSheet(
+            f'QToolButton {{ background: transparent; border: none; color: {THEME.accent_800}; padding: 4px 8px; }}'
+            f'QToolButton:hover {{ color: {THEME.accent}; }}'
+        )
 
         for card in self._cards:
             card.setStyleSheet(THEME.card_style)

@@ -146,5 +146,6 @@ Settings persist to `%APPDATA%\bible-presenter\` on Windows, or
 - `theme.py` — control panel color theme, derived shades, Lucide icon rendering
 - `identity.py`, `keybindings.py`, `config.py`, `service.py` — small persisted-config dataclasses
 - `red_letter.py`, `supplied_words.py` — KJV red-letter and italics data
+- `updater.py` — checks GitHub Releases for a newer build (startup banner + Settings → Help button); release builds only
 - `version.py` — app version string, stamped by CI at build time (source runs show "dev")
 - `resources/` — fonts, icons, app icon (also used as the default identity logo placeholder — no church branding is bundled; set your own name/logo in Settings)
